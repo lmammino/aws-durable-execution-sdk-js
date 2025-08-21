@@ -1,0 +1,321 @@
+import { createDurableContext } from "../../context/durable-context/durable-context";
+import { ExecutionContext, DurableContext } from "../../types";
+import { TerminationManager } from "../../termination-manager/termination-manager";
+import {
+  OperationType,
+  OperationStatus,
+  OperationAction,
+  CheckpointDurableExecutionRequest,
+} from "@amzn/dex-internal-sdk";
+import { randomUUID } from "crypto";
+import { hashId, getStepData } from "../../utils/step-id-utils/step-id-utils";
+import { deleteCheckpoint } from "../../utils/checkpoint/checkpoint";
+
+// Mock the TerminationManager class
+jest.mock("../../termination-manager/termination-manager");
+
+describe("Run In Child Context Integration Tests", () => {
+  let mockExecutionContext: ExecutionContext;
+  let mockParentContext: any;
+  let durableContext: DurableContext;
+  let checkpointCalls: any[] = [];
+
+  beforeEach(() => {
+    // Reset all mocks before each test to ensure isolation
+    jest.resetAllMocks();
+
+    checkpointCalls = [];
+
+    // Clear singleton checkpoint handler
+    deleteCheckpoint();
+
+    // Create proper mocks for TerminationManager
+    const mockTerminationManager = {
+      terminate: jest.fn(),
+      getTerminationPromise: jest.fn().mockResolvedValue({}),
+      isTerminated: false,
+      terminationPromise: Promise.resolve(),
+      handleTermination: jest.fn(),
+      addListener: jest.fn(),
+    } as unknown as TerminationManager;
+
+    mockExecutionContext = {
+      executionContextId: randomUUID(),
+      state: {
+        getStepData: jest.fn().mockResolvedValue({}),
+        checkpoint: jest
+          .fn()
+          .mockImplementation(
+            (taskToken: string, data: CheckpointDurableExecutionRequest) => {
+              const checkpointToken = data.CheckpointToken;
+              checkpointCalls.push({ checkpointToken, data });
+              return Promise.resolve({ CheckpointToken: "mock-token" });
+            },
+          ),
+      },
+      _stepData: {},
+      terminationManager: mockTerminationManager,
+      isLocalMode: false,
+      isVerbose: false,
+      customerHandlerEvent: {},
+      durableExecutionArn: "mock-execution-arn",
+      getStepData: jest.fn((stepId: string) => {
+        return getStepData(mockExecutionContext._stepData, stepId);
+      }),
+    } satisfies ExecutionContext;
+
+    mockParentContext = { awsRequestId: "mock-request-id" };
+
+    durableContext = createDurableContext(
+      mockExecutionContext,
+      mockParentContext,
+    );
+  });
+
+  test("should execute child context with child context", async () => {
+    let capturedChildContext: DurableContext | undefined;
+
+    const result = await durableContext.runInChildContext(
+      "test-child-context",
+      async (childContext) => {
+        capturedChildContext = childContext;
+        return "child-context-result";
+      },
+    );
+
+    expect(result).toBe("child-context-result");
+    expect(capturedChildContext).toBeDefined();
+    expect(capturedChildContext!._stepPrefix).toBe("1");
+
+    expect(checkpointCalls.length).toBe(2);
+
+    // First checkpoint should be START
+    expect(checkpointCalls[0].data.Updates[0].Id).toBe(hashId("1"));
+    expect(checkpointCalls[0].data.Updates[0].Action).toBe(
+      OperationAction.START,
+    );
+    expect(checkpointCalls[0].data.Updates[0].Type).toBe(OperationType.CONTEXT);
+    expect(checkpointCalls[0].data.Updates[0].Name).toBe("test-child-context");
+
+    // Second checkpoint should be SUCCEED
+    expect(checkpointCalls[1].data.Updates[0].Id).toBe(hashId("1"));
+    expect(checkpointCalls[1].data.Updates[0].Action).toBe(
+      OperationAction.SUCCEED,
+    );
+    expect(checkpointCalls[1].data.Updates[0].Type).toBe(OperationType.CONTEXT);
+    expect(checkpointCalls[1].data.Updates[0].Name).toBe("test-child-context");
+    expect(checkpointCalls[1].data.Updates[0].Payload).toBe(
+      JSON.stringify("child-context-result"),
+    );
+  });
+
+  test("should execute step without passing context", async () => {
+    // Create a function that will capture any arguments passed to it
+    const stepFn = jest.fn().mockImplementation(async () => {
+      return "step-result";
+    });
+
+    const result = await durableContext.step("test-step", stepFn);
+
+    expect(result).toBe("step-result");
+    // Check that the function was called with no arguments
+    expect(stepFn).toHaveBeenCalledWith();
+
+    // Step should create checkpoints
+    expect(checkpointCalls.length).toBe(1);
+    expect(checkpointCalls[0].data.Updates[0].Action).toBe(
+      OperationAction.SUCCEED,
+    );
+  });
+
+  test("should checkpoint child context when configured", async () => {
+    const result = await durableContext.runInChildContext(
+      "test-child-context",
+      async (_childContext) => {
+        return "child-context-result";
+      },
+    );
+
+    expect(result).toBe("child-context-result");
+
+    // Child context should create two checkpoints: START and SUCCEED
+    expect(checkpointCalls.length).toBe(2);
+    expect(checkpointCalls[1].data.Updates[0].Action).toBe(
+      OperationAction.SUCCEED,
+    );
+    expect(checkpointCalls[1].data.Updates[0].Payload).toBe(
+      JSON.stringify("child-context-result"),
+    );
+  });
+
+  test("should support nested child contexts with deterministic IDs", async () => {
+    const nestedIds: string[] = [];
+
+    await durableContext.runInChildContext(
+      "parent-child-context",
+      async (parentCtx) => {
+        nestedIds.push(parentCtx._stepPrefix!);
+
+        await parentCtx.runInChildContext(
+          "child-context-1",
+          async (childCtx1) => {
+            nestedIds.push(childCtx1._stepPrefix!);
+          },
+        );
+
+        await parentCtx.runInChildContext(
+          "child-context-2",
+          async (childCtx2) => {
+            nestedIds.push(childCtx2._stepPrefix!);
+
+            await childCtx2.runInChildContext(
+              "grandchild-context",
+              async (grandchildCtx) => {
+                nestedIds.push(grandchildCtx._stepPrefix!);
+              },
+            );
+          },
+        );
+      },
+    );
+
+    // Check that the IDs follow the expected pattern
+    expect(nestedIds[0]).toBe("1"); // parent child context
+    expect(nestedIds[1]).toBe("1-1"); // first child context
+    expect(nestedIds[2]).toBe("1-2"); // second child context
+    expect(nestedIds[3]).toBe("1-2-1"); // grandchild context
+  });
+
+  test("should support mixed step and child context operations", async () => {
+    const operationOrder: string[] = [];
+
+    await durableContext.runInChildContext(
+      "parent-child-context",
+      async (parentCtx) => {
+        operationOrder.push("parent-child-context-start");
+
+        await parentCtx.step("child-step", async () => {
+          operationOrder.push("child-step");
+          return "step-result";
+        });
+
+        await parentCtx.runInChildContext(
+          "child-context",
+          async (_childCtx) => {
+            operationOrder.push("child-context");
+            return "child-context-result";
+          },
+        );
+
+        operationOrder.push("parent-child-context-end");
+        return "parent-result";
+      },
+    );
+
+    expect(operationOrder).toEqual([
+      "parent-child-context-start",
+      "child-step",
+      "child-context",
+      "parent-child-context-end",
+    ]);
+  });
+
+  test("should pass entityId as parentId to child context operations", async () => {
+    // Set up original parent context parentId
+    mockExecutionContext.parentId = "original-parent-123";
+
+    await durableContext.runInChildContext(
+      "test-child-context",
+      async (childContext) => {
+        // Perform a step within the child context
+        await childContext.step("child-step", async () => "child-step-result");
+        return "child-result";
+      },
+    );
+
+    // Should have 3 checkpoints: child context START, child step, child context SUCCEED
+    expect(checkpointCalls.length).toBe(3);
+
+    // Child step checkpoint should have ParentId = child context entityId ("1")
+    const childStepCheckpoint = checkpointCalls[1];
+    expect(childStepCheckpoint.data.Updates[0].ParentId).toBe(hashId("1"));
+    expect(childStepCheckpoint.data.Updates[0].Name).toBe("child-step");
+
+    // Child context checkpoint should have ParentId = original parent
+    const childContextCheckpoint = checkpointCalls[2];
+    expect(childContextCheckpoint.data.Updates[0].ParentId).toBe(
+      hashId("original-parent-123"),
+    );
+    expect(childContextCheckpoint.data.Updates[0].Name).toBe(
+      "test-child-context",
+    );
+  });
+
+  test("should handle adaptive mode with large payload", async () => {
+    // Create a large payload (over 256KB)
+    const largePayload = "x".repeat(300 * 1024); // 300KB string
+
+    const result = await durableContext.runInChildContext(
+      "test-large-child-context",
+      async (_childContext) => {
+        return largePayload;
+      },
+    );
+
+    expect(result).toBe(largePayload);
+
+    // Should create 2 checkpoints but with empty payload for the success checkpoint
+    expect(checkpointCalls.length).toBe(2);
+
+    // First checkpoint should be START
+    expect(checkpointCalls[0].data.Updates[0].Id).toBe(hashId("1"));
+    expect(checkpointCalls[0].data.Updates[0].Action).toBe(
+      OperationAction.START,
+    );
+    expect(checkpointCalls[0].data.Updates[0].Type).toBe(OperationType.CONTEXT);
+    expect(checkpointCalls[0].data.Updates[0].Name).toBe(
+      "test-large-child-context",
+    );
+
+    // Second checkpoint should be SUCCEED with empty payload
+    expect(checkpointCalls[1].data.Updates[0].Id).toBe(hashId("1"));
+    expect(checkpointCalls[1].data.Updates[0].Action).toBe(
+      OperationAction.SUCCEED,
+    );
+    expect(checkpointCalls[1].data.Updates[0].Type).toBe(OperationType.CONTEXT);
+    expect(checkpointCalls[1].data.Updates[0].Name).toBe(
+      "test-large-child-context",
+    );
+    expect(checkpointCalls[1].data.Updates[0].Payload).toBe(
+      "__LARGE_PAYLOAD__",
+    );
+  });
+
+  test("should re-execute on replay when adaptive mode has empty result", async () => {
+    const largePayload = "x".repeat(300 * 1024); // 300KB string
+    let executionCount = 0;
+
+    // Set up completed step data with empty result (simulating large payload checkpoint)
+    mockExecutionContext._stepData = {
+      [hashId("1")]: {
+        Id: "1",
+        Status: OperationStatus.SUCCEEDED,
+        ContextDetails: {
+          Result: "__LARGE_PAYLOAD__", // Empty string indicates large payload in adaptive mode
+        },
+      },
+    };
+
+    const result = await durableContext.runInChildContext(
+      "test-replay-child-context",
+      async (_childContext) => {
+        executionCount++;
+        return largePayload;
+      },
+    );
+
+    expect(result).toBe(largePayload);
+    expect(executionCount).toBe(1); // Should re-execute once
+    expect(checkpointCalls.length).toBe(0); // No new checkpoints for completed context
+  });
+});

@@ -1,0 +1,44 @@
+import { LambdaHttpAuthSchemeProvider } from "./httpAuthSchemeProvider";
+import {
+  AwsCredentialIdentity,
+  AwsCredentialIdentityProvider,
+  HttpAuthScheme,
+} from "@smithy/types";
+/**
+ * @internal
+ */
+export interface HttpAuthExtensionConfiguration {
+  setHttpAuthScheme(httpAuthScheme: HttpAuthScheme): void;
+  httpAuthSchemes(): HttpAuthScheme[];
+  setHttpAuthSchemeProvider(
+    httpAuthSchemeProvider: LambdaHttpAuthSchemeProvider,
+  ): void;
+  httpAuthSchemeProvider(): LambdaHttpAuthSchemeProvider;
+  setCredentials(
+    credentials: AwsCredentialIdentity | AwsCredentialIdentityProvider,
+  ): void;
+  credentials():
+    | AwsCredentialIdentity
+    | AwsCredentialIdentityProvider
+    | undefined;
+}
+/**
+ * @internal
+ */
+export type HttpAuthRuntimeConfig = Partial<{
+  httpAuthSchemes: HttpAuthScheme[];
+  httpAuthSchemeProvider: LambdaHttpAuthSchemeProvider;
+  credentials: AwsCredentialIdentity | AwsCredentialIdentityProvider;
+}>;
+/**
+ * @internal
+ */
+export declare const getHttpAuthExtensionConfiguration: (
+  runtimeConfig: HttpAuthRuntimeConfig,
+) => HttpAuthExtensionConfiguration;
+/**
+ * @internal
+ */
+export declare const resolveHttpAuthRuntimeConfig: (
+  config: HttpAuthExtensionConfiguration,
+) => HttpAuthRuntimeConfig;

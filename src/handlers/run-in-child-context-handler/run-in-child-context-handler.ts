@@ -1,0 +1,236 @@
+import {
+  ExecutionContext,
+  ChildFunc,
+  ChildConfig,
+  OperationSubType,
+} from "../../types";
+import { Context } from "aws-lambda";
+import { OperationStatus, OperationType } from "@amzn/dex-internal-sdk";
+import { log } from "../../utils/logger/logger";
+import { createDurableContext } from "../../context/durable-context/durable-context";
+import { createCheckpoint } from "../../utils/checkpoint/checkpoint";
+import { defaultSerdes } from "../../utils/serdes/serdes";
+import {
+  safeSerialize,
+  safeDeserialize,
+} from "../../errors/serdes-errors/serdes-errors";
+import { OperationInterceptor } from "../../mocks/operation-interceptor";
+
+// Checkpoint size limit in bytes (256KB)
+const CHECKPOINT_SIZE_LIMIT = 256 * 1024;
+
+// Marker for adaptive mode when payload is too large
+const ADAPTIVE_EMPTY_RESULT = "__LARGE_PAYLOAD__";
+
+export const createRunInChildContextHandler = (
+  context: ExecutionContext,
+  checkpoint: ReturnType<typeof createCheckpoint>,
+  parentContext: Context,
+  createStepId: () => string,
+) => {
+  return async <T>(
+    nameOrFn: string | undefined | ChildFunc<T>,
+    fnOrOptions?: ChildFunc<T> | ChildConfig<T>,
+    maybeOptions?: ChildConfig<T>,
+  ): Promise<T> => {
+    let name: string | undefined;
+    let fn: ChildFunc<T>;
+    let options: ChildConfig<T> | undefined;
+
+    if (typeof nameOrFn === "string" || nameOrFn === undefined) {
+      name = nameOrFn;
+      fn = fnOrOptions as ChildFunc<T>;
+      options = maybeOptions;
+    } else {
+      fn = nameOrFn;
+      options = fnOrOptions as ChildConfig<T>;
+    }
+
+    const entityId = createStepId();
+
+    log(context.isVerbose, "🔄", "Running child context:", {
+      entityId,
+      name,
+    });
+
+    // Check if this child context has already completed
+    if (context.getStepData(entityId)?.Status === OperationStatus.SUCCEEDED) {
+      return handleCompletedChildContext<T>(
+        context,
+        parentContext,
+        entityId,
+        name,
+        fn,
+        options,
+      );
+    }
+
+    return executeChildContext(
+      context,
+      checkpoint,
+      parentContext,
+      entityId,
+      name,
+      fn,
+      options,
+    );
+  };
+};
+
+export const handleCompletedChildContext = async <T>(
+  context: ExecutionContext,
+  parentContext: Context,
+  entityId: string,
+  stepName: string | undefined,
+  fn: ChildFunc<T>,
+  options?: ChildConfig<T>,
+): Promise<T> => {
+  const serdes = options?.serdes || defaultSerdes;
+  const result = context.getStepData(entityId)?.ContextDetails?.Result;
+
+  // For adaptive mode, if result is empty string, we need to re-execute
+  if (result === ADAPTIVE_EMPTY_RESULT) {
+    log(
+      context.isVerbose,
+      "🔄",
+      "Adaptive mode: Re-executing child context due to large payload:",
+      { entityId, stepName },
+    );
+
+    // Re-execute the child context to reconstruct the result
+    const childContext = createDurableContext(context, parentContext, entityId);
+
+    return await OperationInterceptor.forExecution(
+      context.durableExecutionArn,
+    ).execute(stepName, () => fn(childContext));
+  }
+
+  log(
+    context.isVerbose,
+    "⏭️",
+    "Child context already finished, returning cached result:",
+    { entityId },
+  );
+
+  return await safeDeserialize(
+    serdes,
+    result,
+    entityId,
+    stepName,
+    context.terminationManager,
+    context.isVerbose,
+    context.durableExecutionArn,
+  );
+};
+
+export const executeChildContext = async <T>(
+  context: ExecutionContext,
+  checkpoint: ReturnType<typeof createCheckpoint>,
+  parentContext: Context,
+  entityId: string,
+  name: string | undefined,
+  fn: ChildFunc<T>,
+  options?: ChildConfig<T>,
+): Promise<T> => {
+  const serdes = options?.serdes || defaultSerdes;
+
+  // Checkpoint at start if not already started
+  if (context.getStepData(entityId) === undefined) {
+    const subType = options?.subType || OperationSubType.RUN_IN_CHILD_CONTEXT;
+    await checkpoint(entityId, {
+      Id: entityId,
+      ParentId: context.parentId,
+      Action: "START",
+      SubType: subType,
+      Type: OperationType.CONTEXT,
+      Name: name,
+    });
+  }
+
+  // Create a child context with the entity ID as prefix
+  const childContext = createDurableContext(
+    {
+      ...context,
+      parentId: entityId,
+    },
+    parentContext,
+    entityId,
+  );
+
+  try {
+    // Execute the child context function
+    const result = await OperationInterceptor.forExecution(
+      context.durableExecutionArn,
+    ).execute(name, () => fn(childContext));
+
+    // Always checkpoint at finish with adaptive mode
+    // Serialize the result for consistency
+    const serializedResult = await safeSerialize(
+      serdes,
+      result,
+      entityId,
+      name,
+      context.terminationManager,
+      context.isVerbose,
+      context.durableExecutionArn,
+    );
+
+    // Check if payload is too large for adaptive mode
+    let payloadToCheckpoint = serializedResult;
+    if (
+      serializedResult &&
+      Buffer.byteLength(serializedResult, "utf8") > CHECKPOINT_SIZE_LIMIT
+    ) {
+      log(
+        context.isVerbose,
+        "📦",
+        "Adaptive mode: Payload exceeds limit, checkpointing empty string:",
+        {
+          entityId,
+          name,
+          payloadSize: Buffer.byteLength(serializedResult, "utf8"),
+          limit: CHECKPOINT_SIZE_LIMIT,
+        },
+      );
+      payloadToCheckpoint = ADAPTIVE_EMPTY_RESULT;
+    }
+
+    const subType = options?.subType || OperationSubType.RUN_IN_CHILD_CONTEXT;
+    await checkpoint(entityId, {
+      Id: entityId,
+      ParentId: context.parentId,
+      Action: "SUCCEED",
+      SubType: subType,
+      Type: OperationType.CONTEXT,
+      Payload: payloadToCheckpoint,
+      Name: name,
+    });
+
+    log(context.isVerbose, "✅", "Child context completed successfully:", {
+      entityId,
+      name,
+    });
+
+    return result;
+  } catch (error) {
+    log(context.isVerbose, "❌", "Child context failed:", {
+      entityId,
+      name,
+      error,
+    });
+
+    // Always checkpoint failures
+    const subType = options?.subType || OperationSubType.RUN_IN_CHILD_CONTEXT;
+    await checkpoint(entityId, {
+      Id: entityId,
+      ParentId: context.parentId,
+      Action: "FAIL",
+      SubType: subType,
+      Type: OperationType.CONTEXT,
+      Payload: error instanceof Error ? error.message : "Unknown error",
+      Name: name,
+    });
+
+    throw error;
+  }
+};
