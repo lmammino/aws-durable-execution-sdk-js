@@ -1,12 +1,8 @@
-.idea
+*.idea
 /node_modules
-*/node_modules
 /build
-*/build
 /dist
-*/dist
 /coverage
-*/coverage
 *.iml
 .aws-sam/*
 *.zip

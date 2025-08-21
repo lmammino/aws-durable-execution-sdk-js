@@ -57,7 +57,7 @@
   },
   "dependencies": {},
   "peerDependencies": {
-    "@amzn/dex-internal-sdk": "file:dex-internal-sdk",
+    "@amzn/dex-internal-sdk": "file:../dex-internal-sdk",
     "@aws-sdk/credential-provider-node": "^3.800.0"
   },
   "peerDependenciesMeta": {

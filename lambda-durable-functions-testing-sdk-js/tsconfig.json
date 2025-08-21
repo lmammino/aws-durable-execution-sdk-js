@@ -1,0 +1,14 @@
+{
+  "extends": "@tsconfig/node20",
+  "compilerOptions": {
+    "declaration": true,
+    "outDir": "./dist",
+    "sourceMap": true,
+    "declarationMap": true,
+    "esModuleInterop": true,
+    "noImplicitAny": true,
+    "isolatedModules": true,
+    "emitDeclarationOnly": true
+  },
+  "include": ["src"]
+}
