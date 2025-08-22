@@ -31,7 +31,6 @@
     "generate-template": "node scripts/generate-template.js",
     "test": "npm run unit-test",
     "unit-test": "jest --collectCoverage",
-    "postunit-test": "generate-coverage-data --language typescript",
     "unit-test-watch": "jest --watch",
     "prettier": "prettier --write './src/**/*.*' && prettier --write './test/**/*.*'"
   },
