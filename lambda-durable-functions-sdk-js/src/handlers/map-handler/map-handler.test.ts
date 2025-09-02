@@ -1,6 +1,12 @@
 import { createMapHandler } from "./map-handler";
-import { ExecutionContext, DurableContext, MapFunc } from "../../types";
+import {
+  ExecutionContext,
+  DurableContext,
+  MapFunc,
+  BatchItemStatus,
+} from "../../types";
 import { TEST_CONSTANTS } from "../../testing/test-constants";
+import { MockBatchResult } from "../../testing/mock-batch-result";
 
 describe("Map Handler", () => {
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
@@ -26,7 +32,11 @@ describe("Map Handler", () => {
       const items = ["item1", "item2"];
       const mapFunc: MapFunc<string> = jest.fn().mockResolvedValue("result");
 
-      mockExecuteConcurrently.mockResolvedValue(["result1", "result2"]);
+      const mockResult = new MockBatchResult([
+        { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        { index: 1, result: "result2", status: BatchItemStatus.SUCCEEDED },
+      ]);
+      mockExecuteConcurrently.mockResolvedValue(mockResult as any);
 
       await mapHandler("test-map", items, mapFunc);
 
@@ -45,7 +55,11 @@ describe("Map Handler", () => {
       const items = ["item1", "item2"];
       const mapFunc: MapFunc<string> = jest.fn().mockResolvedValue("result");
 
-      mockExecuteConcurrently.mockResolvedValue(["result1", "result2"]);
+      const mockResult = new MockBatchResult([
+        { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        { index: 1, result: "result2", status: BatchItemStatus.SUCCEEDED },
+      ]);
+      mockExecuteConcurrently.mockResolvedValue(mockResult as any);
 
       await mapHandler(items, mapFunc);
 
@@ -64,7 +78,10 @@ describe("Map Handler", () => {
       const items = ["item"];
       const mapFunc: MapFunc<string> = jest.fn();
 
-      mockExecuteConcurrently.mockResolvedValue(["result"]);
+      const mockResult = new MockBatchResult([
+        { index: 0, result: "result", status: BatchItemStatus.SUCCEEDED },
+      ]);
+      mockExecuteConcurrently.mockResolvedValue(mockResult as any);
 
       await mapHandler(undefined, items, mapFunc);
 
@@ -84,7 +101,11 @@ describe("Map Handler", () => {
         maxConcurrency: 2,
       };
 
-      mockExecuteConcurrently.mockResolvedValue(["result1", "result2"]);
+      const mockResult = new MockBatchResult([
+        { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        { index: 1, result: "result2", status: BatchItemStatus.SUCCEEDED },
+      ]);
+      mockExecuteConcurrently.mockResolvedValue(mockResult as any);
 
       await mapHandler(items, mapFunc, config);
 
@@ -123,11 +144,12 @@ describe("Map Handler", () => {
       const items: string[] = [];
       const mapFunc: MapFunc<string> = jest.fn();
 
-      mockExecuteConcurrently.mockResolvedValue([]);
+      const mockResult = new MockBatchResult([]);
+      mockExecuteConcurrently.mockResolvedValue(mockResult as any);
 
       const result = await mapHandler(items, mapFunc);
 
-      expect(result).toEqual([]);
+      expect(result.all).toEqual([]);
       expect(mockExecuteConcurrently).toHaveBeenCalledWith(
         undefined,
         [],
@@ -140,11 +162,12 @@ describe("Map Handler", () => {
       const items = ["item1", "item2", "item3"];
       const mapFunc: MapFunc<string> = jest.fn().mockResolvedValue("result");
 
-      mockExecuteConcurrently.mockResolvedValue([
-        "result1",
-        "result2",
-        "result3",
+      const mockResult = new MockBatchResult([
+        { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        { index: 1, result: "result2", status: BatchItemStatus.SUCCEEDED },
+        { index: 2, result: "result3", status: BatchItemStatus.SUCCEEDED },
       ]);
+      mockExecuteConcurrently.mockResolvedValue(mockResult as any);
 
       await mapHandler(items, mapFunc);
 
@@ -160,6 +183,27 @@ describe("Map Handler", () => {
       );
     });
 
+    it("should return BatchResult with correct structure", async () => {
+      const items = ["item1", "item2"];
+      const mapFunc: MapFunc<string> = jest
+        .fn()
+        .mockResolvedValueOnce("result1")
+        .mockResolvedValueOnce("result2");
+
+      const mockResult = new MockBatchResult([
+        { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        { index: 1, result: "result2", status: BatchItemStatus.SUCCEEDED },
+      ]);
+      mockExecuteConcurrently.mockResolvedValue(mockResult as any);
+
+      const result = await mapHandler(items, mapFunc);
+
+      expect(result.getResults()).toEqual(["result1", "result2"]);
+      expect(result.successCount).toBe(2);
+      expect(result.failureCount).toBe(0);
+      expect(result.status).toBe(BatchItemStatus.SUCCEEDED);
+    });
+
     it("should create executor that calls mapFunc correctly", async () => {
       const items = ["item1", "item2"];
       const mapFunc: MapFunc<string> = jest
@@ -169,23 +213,27 @@ describe("Map Handler", () => {
 
       let capturedExecutor: any;
       mockExecuteConcurrently.mockImplementation(async (...args: any[]) => {
-        // Unified signature: (name, items, executor, config) where name can be undefined
         const [, executionItems, executor] = args;
-
         capturedExecutor = executor;
+
         // Simulate calling the executor for each item
         const results = [];
-        for (const item of executionItems as any[]) {
+        for (let i = 0; i < executionItems.length; i++) {
+          const item = executionItems[i];
           const mockChildContext = {} as DurableContext;
           const result = await (executor as any)(item, mockChildContext);
-          results.push(result);
+          results.push({
+            index: i,
+            result,
+            status: BatchItemStatus.SUCCEEDED as const,
+          });
         }
-        return results;
+        return new MockBatchResult(results) as any;
       });
 
       const result = await mapHandler(items, mapFunc);
 
-      expect(result).toEqual(["result1", "result2"]);
+      expect(result.getResults()).toEqual(["result1", "result2"]);
       expect(mapFunc).toHaveBeenCalledTimes(2);
       expect(mapFunc).toHaveBeenCalledWith(
         expect.any(Object),
@@ -209,7 +257,11 @@ describe("Map Handler", () => {
         maxConcurrency: 5,
       };
 
-      mockExecuteConcurrently.mockResolvedValue(["result1", "result2"]);
+      const mockResult = new MockBatchResult([
+        { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        { index: 1, result: "result2", status: BatchItemStatus.SUCCEEDED },
+      ]);
+      mockExecuteConcurrently.mockResolvedValue(mockResult as any);
 
       await mapHandler("test-map", items, mapFunc, config);
 

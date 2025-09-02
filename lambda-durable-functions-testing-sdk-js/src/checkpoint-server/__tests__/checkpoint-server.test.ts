@@ -11,6 +11,7 @@ import {
   Operation,
   SendDurableExecutionCallbackHeartbeatRequest,
   InvalidParameterValueException,
+  OperationAction,
 } from "@amzn/dex-internal-sdk";
 import {
   encodeCheckpointToken,
@@ -477,7 +478,13 @@ describe("checkpoint-server", () => {
 
       const input: CheckpointDurableExecutionRequest = {
         CheckpointToken: checkpointToken,
-        Updates: [{ Id: "new-op", Type: OperationType.STEP }],
+        Updates: [
+          {
+            Id: "new-op",
+            Type: OperationType.STEP,
+            Action: OperationAction.START,
+          },
+        ],
       };
 
       const response = await request(server)
@@ -637,6 +644,66 @@ describe("checkpoint-server", () => {
 
       expect(response.status).toBe(404);
       expect(response.body).toEqual({ message: "Execution not found" });
+    });
+
+    it("should return 400 when checkpoint update is invalid", async () => {
+      const tokenData: CheckpointTokenData = {
+        executionId: createExecutionId("test-execution-id"),
+        invocationId: createInvocationId("test-invocation-id"),
+        token: "test-token",
+      };
+      const checkpointToken = encodeCheckpointToken(tokenData);
+
+      const mockOperations: Operation[] = [
+        {
+          Id: "op1",
+          Type: OperationType.STEP,
+          Status: OperationStatus.SUCCEEDED,
+        } as Operation,
+        {
+          Id: "op2",
+          Type: OperationType.WAIT,
+          Status: OperationStatus.STARTED,
+        } as Operation,
+      ];
+
+      const mockStorage = {
+        registerUpdates: jest.fn().mockReturnValue([]),
+        operationDataMap: new Map([
+          ["op1", { operation: mockOperations[0] }],
+          ["op2", { operation: mockOperations[1] }],
+        ]),
+      };
+
+      mockExecutionManager.getCheckpointsByToken.mockReturnValueOnce({
+        storage: mockStorage as unknown as CheckpointManager,
+        data: tokenData,
+      });
+
+      const input: CheckpointDurableExecutionRequest = {
+        CheckpointToken: checkpointToken,
+        Updates: [
+          {
+            Id: "op1",
+            Type: OperationType.STEP,
+            // op1 already succeeded so this is invalid
+            Action: OperationAction.START,
+          },
+        ],
+      };
+
+      const response = await request(server)
+        .post(`${API_PATHS.CHECKPOINT}/${checkpointToken}/checkpoint`)
+        .send(input);
+
+      expect(response.status).toBe(400);
+      expect(response.headers["x-amzn-errortype"]).toEqual(
+        "InvalidParameterValueException"
+      );
+      expect(response.body).toEqual({
+        Type: "InvalidParameterValueException",
+        message: "Invalid current STEP state to start.",
+      });
     });
   });
 

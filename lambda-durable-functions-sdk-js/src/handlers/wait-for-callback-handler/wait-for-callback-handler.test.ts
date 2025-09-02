@@ -22,7 +22,8 @@ describe("waitForCallback handler", () => {
     } as any;
 
     mockParentContext = {} as Context;
-    mockCheckpoint = jest.fn();
+    mockCheckpoint = jest.fn() as any;
+    mockCheckpoint.force = jest.fn().mockResolvedValue(undefined);
     mockRunInChildContext = jest.fn();
 
     const createStepId = () => {
@@ -48,11 +49,22 @@ describe("waitForCallback handler", () => {
         step: jest
           .fn()
           .mockImplementation(async (stepNameOrFn: any, maybeFn?: any) => {
+            // Create mock telemetry object
+            const mockTelemetry = {
+              logger: {
+                log: jest.fn(),
+                error: jest.fn(),
+                warn: jest.fn(),
+                info: jest.fn(),
+                debug: jest.fn(),
+              },
+            };
+
             // Handle both overloads of step function
             if (typeof stepNameOrFn === "function") {
-              return await stepNameOrFn();
+              return await stepNameOrFn(mockTelemetry);
             } else if (typeof maybeFn === "function") {
-              return await maybeFn();
+              return await maybeFn(mockTelemetry);
             }
             return undefined;
           }),
@@ -75,7 +87,12 @@ describe("waitForCallback handler", () => {
       expect.any(Function),
       { subType: "WaitForCallback" },
     );
-    expect(submitter).toHaveBeenCalledWith("callback-123");
+    expect(submitter).toHaveBeenCalledWith(
+      "callback-123",
+      expect.objectContaining({
+        logger: expect.any(Object),
+      }),
+    );
   });
 
   it("should handle waitForCallback with name and submitter", async () => {
@@ -91,11 +108,22 @@ describe("waitForCallback handler", () => {
         step: jest
           .fn()
           .mockImplementation(async (stepNameOrFn: any, maybeFn?: any) => {
+            // Create mock telemetry object
+            const mockTelemetry = {
+              logger: {
+                log: jest.fn(),
+                error: jest.fn(),
+                warn: jest.fn(),
+                info: jest.fn(),
+                debug: jest.fn(),
+              },
+            };
+
             // Handle both overloads of step function
             if (typeof stepNameOrFn === "function") {
-              return await stepNameOrFn();
+              return await stepNameOrFn(mockTelemetry);
             } else if (typeof maybeFn === "function") {
-              return await maybeFn();
+              return await maybeFn(mockTelemetry);
             }
             return undefined;
           }),
@@ -117,7 +145,12 @@ describe("waitForCallback handler", () => {
       expect.any(Function),
       { subType: "WaitForCallback" },
     );
-    expect(submitter).toHaveBeenCalledWith("callback-456");
+    expect(submitter).toHaveBeenCalledWith(
+      "callback-456",
+      expect.objectContaining({
+        logger: expect.any(Object),
+      }),
+    );
   });
 
   it("should throw error when called without submitter", async () => {
@@ -166,11 +199,22 @@ describe("waitForCallback handler", () => {
         step: jest
           .fn()
           .mockImplementation(async (stepNameOrFn: any, maybeFn?: any) => {
+            // Create mock telemetry object
+            const mockTelemetry = {
+              logger: {
+                log: jest.fn(),
+                error: jest.fn(),
+                warn: jest.fn(),
+                info: jest.fn(),
+                debug: jest.fn(),
+              },
+            };
+
             // Handle both overloads of step function
             if (typeof stepNameOrFn === "function") {
-              return await stepNameOrFn();
+              return await stepNameOrFn(mockTelemetry);
             } else if (typeof maybeFn === "function") {
-              return await maybeFn();
+              return await maybeFn(mockTelemetry);
             }
             return undefined;
           }),
@@ -192,7 +236,12 @@ describe("waitForCallback handler", () => {
       expect.any(Function),
       { subType: "WaitForCallback" },
     );
-    expect(submitter).toHaveBeenCalledWith("callback-no-name");
+    expect(submitter).toHaveBeenCalledWith(
+      "callback-no-name",
+      expect.objectContaining({
+        logger: expect.any(Object),
+      }),
+    );
   });
 
   it("should accept undefined as name parameter", async () => {
@@ -213,10 +262,21 @@ describe("waitForCallback handler", () => {
         step: jest
           .fn()
           .mockImplementation(async (stepNameOrFn: any, maybeFn?: any) => {
+            // Create mock telemetry object
+            const mockTelemetry = {
+              logger: {
+                log: jest.fn(),
+                error: jest.fn(),
+                warn: jest.fn(),
+                info: jest.fn(),
+                debug: jest.fn(),
+              },
+            };
+
             if (typeof stepNameOrFn === "function") {
-              return await stepNameOrFn();
+              return await stepNameOrFn(mockTelemetry);
             } else if (typeof maybeFn === "function") {
-              return await maybeFn();
+              return await maybeFn(mockTelemetry);
             }
             return undefined;
           }),
@@ -238,7 +298,12 @@ describe("waitForCallback handler", () => {
       expect.any(Function),
       { subType: "WaitForCallback" },
     );
-    expect(submitter).toHaveBeenCalledWith("callback-undefined");
+    expect(submitter).toHaveBeenCalledWith(
+      "callback-undefined",
+      expect.objectContaining({
+        logger: expect.any(Object),
+      }),
+    );
   });
 
   it("should throw error when invalid parameter type is provided", async () => {
@@ -279,11 +344,22 @@ describe("waitForCallback handler", () => {
           step: jest
             .fn()
             .mockImplementation(async (stepNameOrFn: any, maybeFn?: any) => {
+              // Create mock telemetry object
+              const mockTelemetry = {
+                logger: {
+                  log: jest.fn(),
+                  error: jest.fn(),
+                  warn: jest.fn(),
+                  info: jest.fn(),
+                  debug: jest.fn(),
+                },
+              };
+
               // Handle both overloads of step function
               if (typeof stepNameOrFn === "function") {
-                return await stepNameOrFn();
+                return await stepNameOrFn(mockTelemetry);
               } else if (typeof maybeFn === "function") {
-                return await maybeFn();
+                return await maybeFn(mockTelemetry);
               }
               return undefined;
             }),
@@ -307,6 +383,11 @@ describe("waitForCallback handler", () => {
       heartbeatTimeout: 30,
       serdes: undefined,
     });
-    expect(submitter).toHaveBeenCalledWith("callback-config");
+    expect(submitter).toHaveBeenCalledWith(
+      "callback-config",
+      expect.objectContaining({
+        logger: expect.any(Object),
+      }),
+    );
   });
 });

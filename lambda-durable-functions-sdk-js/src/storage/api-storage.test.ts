@@ -37,8 +37,12 @@ describe("ApiStorage", () => {
     // Reset all mocks
     jest.clearAllMocks();
 
+    // Set environment variables for ApiStorage
+    process.env.DEX_ENDPOINT = endpoint;
+    process.env.DEX_REGION = "us-east-1";
+
     // Create a new instance of ApiStorage
-    apiStorage = new ApiStorage(endpoint, "us-east-1");
+    apiStorage = new ApiStorage();
 
     // Get the mocked LambdaClient instance
     mockLambdaClient = (LambdaClient as jest.Mock).mock.results[0].value;
@@ -59,10 +63,11 @@ describe("ApiStorage", () => {
 
     try {
       // Set environment variables
-      process.env.AWS_REGION = "eu-west-1";
+      process.env.DEX_ENDPOINT = "https://custom-endpoint.com";
+      process.env.DEX_REGION = "eu-west-1";
 
       // Create a new instance
-      new ApiStorage(endpoint, "eu-west-1");
+      new ApiStorage();
 
       // Verify that LambdaClient was constructed with the environment variables
       expect(LambdaClient).toHaveBeenCalledWith({
@@ -70,6 +75,47 @@ describe("ApiStorage", () => {
         region: "eu-west-1",
         credentials: expect.any(Function),
       });
+    } finally {
+      // Restore original environment
+      process.env = originalEnv;
+    }
+  });
+
+  test("should use default region when DEX_REGION is not set", () => {
+    // Save original environment
+    const originalEnv = process.env;
+
+    try {
+      // Set only endpoint, not region
+      process.env.DEX_ENDPOINT = "https://custom-endpoint.com";
+      delete process.env.DEX_REGION;
+
+      // Create a new instance
+      new ApiStorage();
+
+      // Verify that LambdaClient was constructed with default region
+      expect(LambdaClient).toHaveBeenCalledWith({
+        endpoint: "https://custom-endpoint.com",
+        region: "us-east-1",
+        credentials: expect.any(Function),
+      });
+    } finally {
+      // Restore original environment
+      process.env = originalEnv;
+    }
+  });
+
+  test("should throw error when environment variable is missing", () => {
+    // Save original environment
+    const originalEnv = process.env;
+
+    try {
+      delete process.env.DEX_ENDPOINT;
+
+      // Should throw error when creating instance without environment variables
+      expect(() => new ApiStorage()).toThrow(
+        "DEX_ENDPOINT environment variable must be set",
+      );
     } finally {
       // Restore original environment
       process.env = originalEnv;

@@ -20,12 +20,30 @@ class CheckpointHandler {
   private queue: QueuedCheckpoint[] = [];
   private isProcessing = false;
   private currentTaskToken: string;
+  private forceCheckpointPromises: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+  }> = [];
 
   constructor(
     private context: ExecutionContext,
     initialTaskToken: string,
   ) {
     this.currentTaskToken = initialTaskToken;
+  }
+
+  async forceCheckpoint(): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.forceCheckpointPromises.push({ resolve, reject });
+
+      // Only trigger processing if not already processing
+      // If processing, the current batch will resolve these promises
+      if (!this.isProcessing) {
+        setImmediate(() => {
+          this.processQueue();
+        });
+      }
+    });
   }
 
   async checkpoint(
@@ -59,7 +77,15 @@ class CheckpointHandler {
   }
 
   private async processQueue(): Promise<void> {
-    if (this.isProcessing || this.queue.length === 0) {
+    if (this.isProcessing) {
+      return;
+    }
+
+    const hasQueuedItems = this.queue.length > 0;
+    const hasForceRequests = this.forceCheckpointPromises.length > 0;
+
+    // Only proceed if we have actual queue items OR force requests with no ongoing processing
+    if (!hasQueuedItems && !hasForceRequests) {
       return;
     }
 
@@ -74,11 +100,21 @@ class CheckpointHandler {
     });
 
     try {
-      await this.processBatch(batch);
+      // Only call checkpoint API if we have actual updates OR force requests
+      if (batch.length > 0 || this.forceCheckpointPromises.length > 0) {
+        await this.processBatch(batch);
+      }
 
       // Resolve all promises in the batch
       batch.forEach((item) => {
         item.resolve();
+      });
+
+      // Collect and resolve ALL force promises after checkpoint completes
+      // This ensures force requests that came in during processing are included
+      const forcePromises = this.forceCheckpointPromises.splice(0);
+      forcePromises.forEach((promise) => {
+        promise.resolve();
       });
 
       log(
@@ -87,6 +123,7 @@ class CheckpointHandler {
         "Checkpoint batch processed successfully:",
         {
           batchSize: batch.length,
+          forceRequests: forcePromises.length,
           newTaskToken: this.currentTaskToken,
         },
       );
@@ -106,6 +143,12 @@ class CheckpointHandler {
 
       batch.forEach((item) => {
         item.reject(checkpointError);
+      });
+
+      // Reject ALL force promises (including ones added during processing)
+      const forcePromises = this.forceCheckpointPromises.splice(0);
+      forcePromises.forEach((promise) => {
+        promise.reject(checkpointError);
       });
 
       // Terminate execution on checkpoint failure with detailed message
@@ -147,9 +190,6 @@ class CheckpointHandler {
       CheckpointToken: this.currentTaskToken,
       Updates: updates,
     };
-
-    // Temporary log checkpointToken to catch any issue related to Invalid checkpoint token
-    log(true, "🔑🔑🔑🔑🔑", "Received checkpointToken:", this.currentTaskToken);
 
     log(this.context.isVerbose, "⏺️", "Creating checkpoint batch:", {
       batchSize: updates.length,
@@ -239,12 +279,18 @@ export const createCheckpoint = (
     singletonCheckpointHandler = new CheckpointHandler(context, taskToken);
   }
 
-  return async (
+  const checkpoint = async (
     stepId: string,
     data: Partial<OperationUpdate>,
   ): Promise<void> => {
     return await singletonCheckpointHandler!.checkpoint(stepId, data);
   };
+
+  checkpoint.force = async (): Promise<void> => {
+    return await singletonCheckpointHandler!.forceCheckpoint();
+  };
+
+  return checkpoint;
 };
 
 export const deleteCheckpoint = (): void => {

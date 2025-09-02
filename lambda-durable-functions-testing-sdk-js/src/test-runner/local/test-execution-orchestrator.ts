@@ -101,7 +101,7 @@ export class TestExecutionOrchestrator {
     } finally {
       // Stop polling
       await new Promise<void>((resolve) => {
-        // TODO: stop polling with the `EXECUTION` checkpoint event when the SDK adds this
+        // TODO: improve the polling mechanism so that we don't need an arbitrary timer
         setTimeout(() => {
           abortController.abort();
           resolve();
@@ -141,7 +141,6 @@ export class TestExecutionOrchestrator {
         );
 
         // Yield to event loop if `pollCheckpointData` returns too often (mainly in unit tests).
-        // TODO: remove this when the `EXECUTION` event is used to end polling
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     } catch (err: unknown) {
@@ -336,6 +335,13 @@ export class TestExecutionOrchestrator {
       return;
     }
 
+    if (this.invocationTracker.hasActiveInvocation()) {
+      console.warn(
+        "Skipping scheduled function execution due to current active invocation"
+      );
+      return;
+    }
+
     const newInvocationData = await this.checkpointApi.startInvocation(
       executionId
     );
@@ -364,11 +370,11 @@ export class TestExecutionOrchestrator {
 
   /**
    * Schedules an async function to execute after a specified delay.
-   * 
+   *
    * This method supports executing both a callback and an invocation function:
    * 1. The callback (if provided) is always executed first after the delay
    * 2. The invocation function is executed only if there's no active invocation (unless skipTime is true)
-   * 
+   *
    * This pattern allows for operations like updating checkpoint data even when
    * invocations are skipped due to active invocation conflicts.
    *
@@ -407,7 +413,6 @@ export class TestExecutionOrchestrator {
    *
    * When the handler returns "SUCCEEDED/FAILED" status, the execution is resolved
    * and polling stops. For "PENDING" status, execution continues.
-   * TODO: use the `EXECUTION` checkpoint type instead of `SUCCEEDED/FAILED` for resolving the execution
    *
    * @param executionId Current execution ID
    * @param checkpointToken Current checkpoint token
@@ -432,18 +437,15 @@ export class TestExecutionOrchestrator {
         }
       );
 
-      if (
-        (value.Status === InvocationStatus.SUCCEEDED ||
-          value.Status === InvocationStatus.FAILED) &&
-        typeof value.Result === "string"
-      ) {
-        // TODO: remove this when TS language SDK uses execution checkpoints
+      if (value.Status === InvocationStatus.SUCCEEDED) {
         this.executionState.resolveWith({
           result: value.Result,
-          status:
-            value.Status === InvocationStatus.SUCCEEDED
-              ? OperationStatus.SUCCEEDED
-              : OperationStatus.FAILED,
+          status: OperationStatus.SUCCEEDED,
+        });
+      } else if (value.Status === InvocationStatus.FAILED) {
+        this.executionState.resolveWith({
+          error: value.Error,
+          status: OperationStatus.FAILED,
         });
       }
     } catch (err) {

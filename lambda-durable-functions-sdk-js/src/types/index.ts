@@ -1,9 +1,17 @@
 import { Context } from "aws-lambda";
+import { StructuredLogger } from "../utils/logger/structured-logger";
 import { TerminationManager } from "../termination-manager/termination-manager";
 import { ExecutionState } from "../storage/storage-provider";
 import { Serdes } from "../utils/serdes/serdes";
 
-import { Operation } from "@amzn/dex-internal-sdk";
+import { ErrorObject, Operation } from "@amzn/dex-internal-sdk";
+
+// Define BatchItemStatus enum
+export enum BatchItemStatus {
+  SUCCEEDED = "SUCCEEDED",
+  FAILED = "FAILED",
+  STARTED = "STARTED",
+}
 
 // Import types for concurrent execution
 import type {
@@ -11,6 +19,12 @@ import type {
   ConcurrentExecutor,
   ConcurrencyConfig,
 } from "../handlers/concurrent-execution-handler/concurrent-execution-handler";
+
+// Import BatchResult types
+import type {
+  BatchResult,
+  BatchItem,
+} from "../handlers/concurrent-execution-handler/batch-result";
 
 export interface LambdaHandler<T> {
   (event: T, context: Context): Promise<DurableExecutionInvocationOutput>;
@@ -28,11 +42,9 @@ export interface DurableExecutionInvocationInput {
   LoggingMode?: string;
 
   /**
-   * This is temporary to allow us to dynamically create our DEX client per-invocation.
-   * The backend doesn't set these fields, only local runner does. Without them, we default to environment variables.
+   * Flag to indicate if this execution is running against local runner.
    */
-  DexEndpoint?: string;
-  DexRegion?: string;
+  LocalRunner?: boolean;
 }
 
 export enum InvocationStatus {
@@ -54,10 +66,24 @@ export enum OperationSubType {
   WAIT_FOR_CONDITION = "WaitForCondition",
 }
 
-export interface DurableExecutionInvocationOutput {
-  Status: InvocationStatus;
-  Result: string;
+interface DurableExecutionInvocationOutputFailed {
+  Status: InvocationStatus.FAILED;
+  Error: ErrorObject;
 }
+
+interface DurableExecutionInvocationOutputSucceeded {
+  Status: InvocationStatus.SUCCEEDED;
+  Result?: string;
+}
+
+interface DurableExecutionInvocationOutputPending {
+  Status: InvocationStatus.PENDING;
+}
+
+export type DurableExecutionInvocationOutput =
+  | DurableExecutionInvocationOutputSucceeded
+  | DurableExecutionInvocationOutputFailed
+  | DurableExecutionInvocationOutputPending;
 
 export interface DurableContext extends Context {
   _stepPrefix?: string;
@@ -72,7 +98,10 @@ export interface DurableContext extends Context {
     fnOrOptions?: ChildFunc<T> | ChildConfig<T>,
     maybeOptions?: ChildConfig<T>,
   ) => Promise<T>;
-  wait: (millis: number, name?: string | undefined) => Promise<void>;
+  wait: {
+    (name: string, millis: number): Promise<void>;
+    (millis: number): Promise<void>;
+  };
   waitForCondition: <T>(
     nameOrCheck: string | undefined | WaitForConditionCheckFunc<T>,
     checkOrConfig?: WaitForConditionCheckFunc<T> | WaitForConditionConfig<T>,
@@ -92,12 +121,12 @@ export interface DurableContext extends Context {
     itemsOrMapFunc?: any[] | MapFunc<T>,
     mapFuncOrConfig?: MapFunc<T> | MapConfig,
     maybeConfig?: MapConfig,
-  ) => Promise<T[]>;
+  ) => Promise<BatchResult<T>>;
   parallel: <T>(
     nameOrBranches: string | undefined | ParallelFunc<T>[],
     branchesOrConfig?: ParallelFunc<T>[] | ParallelConfig,
     maybeConfig?: ParallelConfig,
-  ) => Promise<T[]>;
+  ) => Promise<BatchResult<T>>;
   promise: {
     all: <T>(
       nameOrPromises: string | undefined | Promise<T>[],
@@ -123,7 +152,8 @@ export interface DurableContext extends Context {
       | ConcurrentExecutor<TItem, TResult>,
     executorOrConfig?: ConcurrentExecutor<TItem, TResult> | ConcurrencyConfig,
     maybeConfig?: ConcurrencyConfig,
-  ) => Promise<TResult[]>;
+  ) => Promise<BatchResult<TResult>>;
+  configureLogger: (logger: Logger) => void;
 }
 
 export interface ExecutionContext {
@@ -175,9 +205,23 @@ export interface WaitForCallbackConfig {
 export type CreateCallbackResult<T> = [Promise<T>, string]; // [promise, callbackId]
 export type WaitForCallbackSubmitterFunc = (
   callbackId: string,
+  telemetry: Telemetry,
 ) => Promise<void>;
 
-export type StepFunc<T> = () => Promise<T>;
+// Generic logger interface for custom logger implementations
+export interface Logger {
+  log(level: string, message?: string, data?: any, error?: Error): void;
+  error(message?: string, error?: Error, data?: any): void;
+  warn(message?: string, data?: any): void;
+  info(message?: string, data?: any): void;
+  debug(message?: string, data?: any): void;
+}
+
+export interface Telemetry {
+  logger: StructuredLogger;
+}
+
+export type StepFunc<T> = (telemetry: Telemetry) => Promise<T>;
 export type ChildFunc<T> = (context: DurableContext) => Promise<T>;
 export type MapFunc<T> = (
   context: DurableContext,
@@ -188,7 +232,10 @@ export type MapFunc<T> = (
 export type ParallelFunc<T> = (context: DurableContext) => Promise<T>;
 
 // Wait for condition types
-export type WaitForConditionCheckFunc<T> = (state: T) => Promise<T>;
+export type WaitForConditionCheckFunc<T> = (
+  state: T,
+  telemetry: Telemetry,
+) => Promise<T>;
 export type WaitForConditionWaitStrategyFunc<T> = (
   state: T,
   attempt: number,
@@ -206,12 +253,20 @@ export interface WaitForConditionConfig<T> {
 
 export interface MapConfig {
   maxConcurrency?: number;
-  // Empty for now - will be extended later with batching, completion config, etc.
+  completionConfig?: {
+    minSuccessful?: number;
+    toleratedFailureCount?: number;
+    toleratedFailurePercentage?: number;
+  };
 }
 
 export interface ParallelConfig {
   maxConcurrency?: number;
-  // Empty for now - will be extended later with completion config, etc.
+  completionConfig?: {
+    minSuccessful?: number;
+    toleratedFailureCount?: number;
+    toleratedFailurePercentage?: number;
+  };
 }
 
 // Re-export concurrent execution types for public API
@@ -220,3 +275,9 @@ export type {
   ConcurrentExecutor,
   ConcurrencyConfig,
 } from "../handlers/concurrent-execution-handler/concurrent-execution-handler";
+
+// Re-export BatchResult types for public API
+export type {
+  BatchResult,
+  BatchItem,
+} from "../handlers/concurrent-execution-handler/batch-result";

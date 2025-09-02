@@ -5,6 +5,7 @@ import {
   CreateCallbackConfig,
   DurableContext,
   OperationSubType,
+  Telemetry,
 } from "../../types";
 import { log } from "../../utils/logger/logger";
 
@@ -68,12 +69,12 @@ export const createWaitForCallbackHandler = (
       });
 
       // Execute the submitter step (submitter is now mandatory)
-      await childCtx.step(async () => {
+      await childCtx.step(async (telemetry: Telemetry) => {
         log(context.isVerbose, "📤", "Executing submitter:", {
           callbackId,
           name,
         });
-        await submitter(callbackId);
+        await submitter(callbackId, telemetry);
         log(context.isVerbose, "✅", "Submitter completed:", {
           callbackId,
           name,

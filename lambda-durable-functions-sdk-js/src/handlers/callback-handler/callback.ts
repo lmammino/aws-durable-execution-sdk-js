@@ -8,8 +8,14 @@ import { OperationStatus, OperationType } from "@amzn/dex-internal-sdk";
 import { log } from "../../utils/logger/logger";
 import { createCheckpoint } from "../../utils/checkpoint/checkpoint";
 import { TerminationReason } from "../../termination-manager/types";
-import { defaultSerdes, Serdes } from "../../utils/serdes/serdes";
+import { Serdes } from "../../utils/serdes/serdes";
 import { safeDeserialize } from "../../errors/serdes-errors/serdes-errors";
+import { CallbackError } from "../../errors/callback-error/callback-error";
+
+const passThroughSerdes: Serdes<any> = {
+  serialize: async (value: any) => value,
+  deserialize: async (data: string | undefined) => data,
+};
 
 /**
  * Creates a thenable that terminates only when awaited (when .then() is called)
@@ -94,7 +100,7 @@ export const createCallback = (
     }
 
     const stepId = createStepId();
-    const serdes = config?.serdes || defaultSerdes;
+    const serdes = config?.serdes || passThroughSerdes;
 
     log(context.isVerbose, "📞", "Creating callback:", {
       stepId,
@@ -188,11 +194,10 @@ const handleFailedCallback = async <T>(
     throw new Error(`No callback ID found for failed callback: ${stepId}`);
   }
 
-  const errorMessage = stepData?.StepDetails?.Result;
-  const error = new Error(errorMessage || "Callback failed");
-
   // Return rejected promise with the error
-  const rejectedPromise = Promise.reject(error) as Promise<T>;
+  const rejectedPromise = Promise.reject(
+    new CallbackError(stepData?.CallbackDetails?.Error),
+  ) as Promise<T>;
   return [rejectedPromise, callbackData.CallbackId];
 };
 

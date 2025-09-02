@@ -18,7 +18,7 @@ describe("LocalDurableTestRunner mocking Integration", () => {
         const stepResult = await context.runInChildContext(
           "parent-context",
           async (childContext) => {
-            await childContext.wait(1000, "child-wait");
+            await childContext.wait("child-wait", 1000);
 
             return Promise.resolve({ userId: 123, name: "John Doe" });
           }
@@ -263,7 +263,7 @@ describe("LocalDurableTestRunner mocking Integration", () => {
             const innerResult = await outerChildContext.runInChildContext(
               "inner-context",
               async (innerChildContext) => {
-                await innerChildContext.wait(5000, "deep-wait");
+                await innerChildContext.wait("deep-wait", 5000);
                 return { level: "inner", data: "deep-data" };
               }
             );
@@ -368,7 +368,7 @@ describe("LocalDurableTestRunner mocking Integration", () => {
           })
         );
 
-        await context.wait(10000, "wait");
+        await context.wait("wait", 10000);
 
         const stepResult = await context.step("after-wait", () =>
           Promise.resolve({ completed: "after-wait" })

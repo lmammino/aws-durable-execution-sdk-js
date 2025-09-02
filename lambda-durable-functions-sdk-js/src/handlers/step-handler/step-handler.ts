@@ -5,9 +5,14 @@ import {
   RetryDecision,
   StepSemantics,
   OperationSubType,
+  Telemetry,
 } from "../../types";
 import { Context } from "aws-lambda";
-import { OperationStatus, OperationType } from "@amzn/dex-internal-sdk";
+import {
+  OperationAction,
+  OperationStatus,
+  OperationType,
+} from "@amzn/dex-internal-sdk";
 import { log } from "../../utils/logger/logger";
 import { createCheckpoint } from "../../utils/checkpoint/checkpoint";
 import { retryPresets } from "../../utils/retry/retry-presets/retry-presets";
@@ -20,6 +25,8 @@ import {
 } from "../../errors/serdes-errors/serdes-errors";
 import { isUnrecoverableError } from "../../errors/unrecoverable-error/unrecoverable-error";
 import { OperationInterceptor } from "../../mocks/operation-interceptor";
+import { createErrorObjectFromError } from "../../utils/error-object/error-object";
+import { createStructuredLogger } from "../../utils/logger/structured-logger";
 
 export const createStepHandler = (
   context: ExecutionContext,
@@ -100,10 +107,10 @@ export const createStepHandler = (
           await checkpoint(stepId, {
             Id: stepId,
             ParentId: context.parentId,
-            Action: "FAIL",
+            Action: OperationAction.FAIL,
             SubType: OperationSubType.STEP,
             Type: OperationType.STEP,
-            Payload: error.message,
+            Error: createErrorObjectFromError(error),
             Name: name,
           });
 
@@ -113,10 +120,10 @@ export const createStepHandler = (
           await checkpoint(stepId, {
             Id: stepId,
             ParentId: context.parentId,
-            Action: "RETRY",
+            Action: OperationAction.RETRY,
             SubType: OperationSubType.STEP,
             Type: OperationType.STEP,
-            Payload: error.message,
+            Error: createErrorObjectFromError(error),
             Name: name,
             StepOptions: {
               NextAttemptDelaySeconds: retryDecision.delaySeconds,
@@ -177,9 +184,20 @@ export const executeStep = async <T>(
   const semantics = options?.semantics || StepSemantics.AtLeastOncePerRetry;
   const serdes = options?.serdes || defaultSerdes;
 
-  // For AT_MOST_ONCE_PER_RETRY semantics, we checkpoint at the start
+  // Checkpoint at start for both semantics
   if (semantics === StepSemantics.AtMostOncePerRetry) {
+    // Wait for checkpoint to complete
     await checkpoint(stepId, {
+      Id: stepId,
+      ParentId: context.parentId,
+      Action: "START",
+      SubType: OperationSubType.STEP,
+      Type: OperationType.STEP,
+      Name: name,
+    });
+  } else {
+    // Fire and forget for AtLeastOncePerRetry
+    checkpoint(stepId, {
       Id: stepId,
       ParentId: context.parentId,
       Action: "START",
@@ -190,10 +208,23 @@ export const executeStep = async <T>(
   }
 
   try {
-    // Execute the step function without passing a context
+    // Get current attempt number for logger
+    const stepData = context.getStepData(stepId);
+    const currentAttempt = stepData?.StepDetails?.Attempt || 0;
+
+    // Create telemetry with logger
+    const telemetry: Telemetry = {
+      logger: createStructuredLogger({
+        stepId,
+        executionId: context.durableExecutionArn,
+        attempt: currentAttempt,
+      }),
+    };
+
+    // Execute the step function with stepUtil
     const result = await OperationInterceptor.forExecution(
       context.durableExecutionArn,
-    ).execute(name, fn);
+    ).execute(name, () => fn(telemetry));
 
     // Serialize the result for consistency
     const serializedResult = await safeSerialize(
@@ -295,10 +326,10 @@ export const executeStep = async <T>(
       await checkpoint(stepId, {
         Id: stepId,
         ParentId: context.parentId,
-        Action: "FAIL",
+        Action: OperationAction.FAIL,
         SubType: OperationSubType.STEP,
         Type: OperationType.STEP,
-        Payload: error instanceof Error ? error.message : "Unknown error",
+        Error: createErrorObjectFromError(error),
         Name: name,
       });
 
@@ -308,10 +339,10 @@ export const executeStep = async <T>(
       await checkpoint(stepId, {
         Id: stepId,
         ParentId: context.parentId,
-        Action: "RETRY",
+        Action: OperationAction.RETRY,
         SubType: OperationSubType.STEP,
         Type: OperationType.STEP,
-        Payload: error instanceof Error ? error.message : "Unknown error",
+        Error: createErrorObjectFromError(error),
         Name: name,
         StepOptions: {
           NextAttemptDelaySeconds: retryDecision.delaySeconds,

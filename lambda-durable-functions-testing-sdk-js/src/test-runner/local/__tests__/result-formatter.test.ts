@@ -19,7 +19,8 @@ describe("ResultFormatter", () => {
     mockOperationIndex = new IndexedOperations([]);
     mockOperationStorage = new OperationStorage(
       new OperationWaitManager(),
-      mockOperationIndex
+      mockOperationIndex,
+      jest.fn()
     ) as jest.Mocked<OperationStorage>;
     resultFormatter = new ResultFormatter<{ success: boolean }>();
     mockWaitManager = new OperationWaitManager();

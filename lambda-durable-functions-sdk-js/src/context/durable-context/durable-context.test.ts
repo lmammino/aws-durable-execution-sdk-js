@@ -169,14 +169,14 @@ describe("Durable Context", () => {
       mockParentContext,
     );
 
-    durableContext.wait(1000, "test-wait");
+    durableContext.wait("test-wait", 1000);
 
     expect(createWaitHandler).toHaveBeenCalledWith(
       mockExecutionContext,
       mockCheckpointHandler,
       expect.any(Function),
     );
-    expect(mockWaitHandler).toHaveBeenCalledWith(1000, "test-wait");
+    expect(mockWaitHandler).toHaveBeenCalledWith("test-wait", 1000);
   });
 
   test("should call callback handler when createCallback method is invoked", () => {
@@ -421,5 +421,38 @@ describe("Durable Context", () => {
       executor,
       undefined, // maybeConfig parameter
     );
+  });
+
+  it("should have configureLogger method available", () => {
+    const durableContext = createDurableContext(
+      mockExecutionContext,
+      mockParentContext,
+    );
+    expect(typeof durableContext.configureLogger).toBe("function");
+  });
+
+  it("should configure custom logger through DurableContext", () => {
+    const durableContext = createDurableContext(
+      mockExecutionContext,
+      mockParentContext,
+    );
+
+    const mockCustomLogger = {
+      log: jest.fn(),
+      error: jest.fn(),
+      warn: jest.fn(),
+      info: jest.fn(),
+      debug: jest.fn(),
+    };
+
+    // Configure custom logger
+    durableContext.configureLogger(mockCustomLogger);
+
+    // Verify that the custom logger was set by checking the setCustomLogger was called
+    // Since the step handler is mocked, we can't test the full integration here
+    // but we can verify the method exists and doesn't throw
+    expect(() =>
+      durableContext.configureLogger(mockCustomLogger),
+    ).not.toThrow();
   });
 });

@@ -42,11 +42,12 @@ describe("RecordDefinitionStorage", () => {
     // Reset all mocks
     jest.clearAllMocks();
 
+    // Set required environment variables
+    process.env.DEX_ENDPOINT = endpoint;
+    process.env.DEX_REGION = "us-east-1";
+
     // Create a new instance of RecordDefinitionStorage
-    recordDefinitionStorage = new RecordDefinitionStorage(
-      endpoint,
-      "us-east-1",
-    );
+    recordDefinitionStorage = new RecordDefinitionStorage();
 
     // Get the mocked SWFClient instance
     durableExecutionsClient = (LambdaClient as jest.Mock).mock.results[0].value;
@@ -67,10 +68,11 @@ describe("RecordDefinitionStorage", () => {
 
     try {
       // Set environment variables
-      process.env.AWS_REGION = "eu-west-1";
+      process.env.DEX_ENDPOINT = endpoint;
+      process.env.DEX_REGION = "eu-west-1";
 
       // Create a new instance
-      new ApiStorage(endpoint, "eu-west-1");
+      new ApiStorage();
 
       // Verify that LambdaClient was constructed with the environment variables
       expect(LambdaClient).toHaveBeenCalledWith({

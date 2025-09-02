@@ -5,7 +5,11 @@ import {
   OperationSubType,
 } from "../../types";
 import { Context } from "aws-lambda";
-import { OperationStatus, OperationType } from "@amzn/dex-internal-sdk";
+import {
+  OperationAction,
+  OperationStatus,
+  OperationType,
+} from "@amzn/dex-internal-sdk";
 import { log } from "../../utils/logger/logger";
 import { createDurableContext } from "../../context/durable-context/durable-context";
 import { createCheckpoint } from "../../utils/checkpoint/checkpoint";
@@ -15,6 +19,7 @@ import {
   safeDeserialize,
 } from "../../errors/serdes-errors/serdes-errors";
 import { OperationInterceptor } from "../../mocks/operation-interceptor";
+import { createErrorObjectFromError } from "../../utils/error-object/error-object";
 
 // Checkpoint size limit in bytes (256KB)
 const CHECKPOINT_SIZE_LIMIT = 256 * 1024;
@@ -224,10 +229,10 @@ export const executeChildContext = async <T>(
     await checkpoint(entityId, {
       Id: entityId,
       ParentId: context.parentId,
-      Action: "FAIL",
+      Action: OperationAction.FAIL,
       SubType: subType,
       Type: OperationType.CONTEXT,
-      Payload: error instanceof Error ? error.message : "Unknown error",
+      Error: createErrorObjectFromError(error),
       Name: name,
     });
 

@@ -565,8 +565,10 @@ describe("deleteCheckpointHandler", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    deleteCheckpoint(); // Clear singleton before each test
 
     mockTerminationManager = new TerminationManager();
+    jest.spyOn(mockTerminationManager, "terminate");
 
     // Create separate mock states for each context to ensure independence
     mockState1 = {
@@ -714,6 +716,86 @@ describe("deleteCheckpointHandler", () => {
     // Clean up
     deleteCheckpoint();
   });
+
+  describe("forceCheckpoint", () => {
+    it("should call checkpoint API with empty updates when no items in queue", async () => {
+      const checkpoint = createCheckpoint(mockContext1, "test-token");
+
+      await checkpoint.force();
+
+      expect(mockState1.checkpoint).toHaveBeenCalledWith("test-token", {
+        CheckpointToken: "test-token",
+        Updates: [],
+      });
+    });
+
+    it("should not make additional checkpoint call when force is called during ongoing checkpoint", async () => {
+      const checkpoint = createCheckpoint(mockContext1, "test-token");
+
+      // Make checkpoint API slow to simulate ongoing processing
+      let resolveCheckpoint!: (value: any) => void;
+      let checkpointCalled = false;
+      const checkpointPromise = new Promise<any>((resolve) => {
+        resolveCheckpoint = resolve;
+        checkpointCalled = true;
+      });
+      mockState1.checkpoint.mockReturnValue(checkpointPromise);
+
+      // Start a regular checkpoint
+      const regularCheckpointPromise = checkpoint("step1", {
+        Type: OperationType.STEP,
+        Action: OperationAction.START,
+      });
+
+      // Wait for checkpoint to start processing
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Ensure checkpoint was actually called
+      expect(checkpointCalled).toBe(true);
+
+      // Verify first call was made
+      expect(mockState1.checkpoint).toHaveBeenCalledTimes(1);
+
+      // Call force while the regular checkpoint is processing
+      const forceCheckpointPromise = checkpoint.force();
+
+      // Should still only have one API call (no additional call for force)
+      expect(mockState1.checkpoint).toHaveBeenCalledTimes(1);
+
+      // Resolve the checkpoint API call
+      resolveCheckpoint({
+        CheckpointToken: "new-token",
+      });
+
+      // Both promises should resolve
+      await Promise.all([regularCheckpointPromise, forceCheckpointPromise]);
+
+      // Should still only have made one API call total (the force request piggybacked)
+      expect(mockState1.checkpoint).toHaveBeenCalledTimes(1);
+      expect(mockState1.checkpoint).toHaveBeenCalledWith("test-token", {
+        CheckpointToken: "test-token",
+        Updates: [
+          {
+            Type: OperationType.STEP,
+            Action: OperationAction.START,
+            Id: hashId("step1"),
+          },
+        ],
+      });
+    });
+
+    it("should reject force checkpoint promises when checkpoint fails", async () => {
+      const checkpoint = createCheckpoint(mockContext1, "test-token");
+      const error = new Error("Checkpoint failed");
+      mockState1.checkpoint.mockRejectedValue(error);
+
+      await expect(checkpoint.force()).rejects.toThrow(CheckpointFailedError);
+      expect(mockTerminationManager.terminate).toHaveBeenCalledWith({
+        reason: TerminationReason.CHECKPOINT_FAILED,
+        message: "Checkpoint batch failed: Checkpoint failed",
+      });
+    });
+  });
 });
 
 describe("createCheckpointHandler", () => {
@@ -731,6 +813,7 @@ describe("createCheckpointHandler", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    deleteCheckpoint(); // Clear singleton before each test
 
     mockTerminationManager = new TerminationManager();
     jest.spyOn(mockTerminationManager, "terminate");

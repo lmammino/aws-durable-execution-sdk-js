@@ -1,19 +1,21 @@
-import { ExecutionState } from "./storage-provider";
 import { ApiStorage } from "./api-storage";
+import { PlaygroundLocalRunnerStorage } from "./local-runner-storage";
 import { RecordDefinitionStorage } from "./record-definition-storage";
+import { ExecutionState } from "./storage-provider";
 
 export class ExecutionStateFactory {
-  static createExecutionState(
-    dexEndpoint: string,
-    dexRegion: string,
-  ): ExecutionState {
+  static createExecutionState(isLocalRunner?: boolean): ExecutionState {
     const isRecordDefinitionMode =
       process.env.DURABLE_RECORD_DEFINITION_MODE === "true";
 
     if (isRecordDefinitionMode) {
-      return new RecordDefinitionStorage(dexEndpoint, dexRegion);
+      return new RecordDefinitionStorage();
     }
 
-    return new ApiStorage(dexEndpoint, dexRegion);
+    if (isLocalRunner) {
+      return new PlaygroundLocalRunnerStorage();
+    }
+
+    return new ApiStorage();
   }
 }

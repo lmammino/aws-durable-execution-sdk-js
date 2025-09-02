@@ -19,8 +19,8 @@ describe("LocalDurableTestRunner", () => {
   const mockHandlerFunction = jest.fn();
   let mockOrchestrator: jest.Mocked<TestExecutionOrchestrator>;
   let mockResultFormatter: jest.Mocked<ResultFormatter<{ success: boolean }>>;
-  let mockOperationStorage: jest.Mocked<OperationStorage>;
-  let mockWaitManager: jest.Mocked<OperationWaitManager>;
+  let mockOperationStorage: Partial<jest.Mocked<OperationStorage>>;
+  let mockWaitManager: Partial<jest.Mocked<OperationWaitManager>>;
   let mockCheckpointServerWorkerManager: jest.Mocked<CheckpointServerWorkerManager>;
 
   beforeEach(() => {
@@ -45,16 +45,17 @@ describe("LocalDurableTestRunner", () => {
       .spyOn(CheckpointServerWorkerManager, "getInstance")
       .mockReturnValue(mockCheckpointServerWorkerManager);
 
-    // Create mock instances for dependency injection testing
+    // Create mock instances for dependency injection testing - now type-safe!
     mockWaitManager = {
       waitForOperation: jest.fn(),
       clearWaitingOperations: jest.fn(),
-    } as unknown as jest.Mocked<OperationWaitManager>;
+      handleCheckpointReceived: jest.fn(),
+    };
 
     mockOperationStorage = {
       registerOperation: jest.fn(),
       populateOperations: jest.fn(),
-    } as unknown as jest.Mocked<OperationStorage>;
+    };
 
     mockOrchestrator = {
       executeHandler: jest.fn().mockResolvedValue({
@@ -97,7 +98,8 @@ describe("LocalDurableTestRunner", () => {
       expect(OperationWaitManager).toHaveBeenCalledWith();
       expect(OperationStorage).toHaveBeenCalledWith(
         mockWaitManager,
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(Function)
       );
       expect(ResultFormatter).toHaveBeenCalled();
     });

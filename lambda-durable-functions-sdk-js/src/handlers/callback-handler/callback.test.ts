@@ -1,3 +1,7 @@
+import {
+  createMockCheckpoint,
+  CheckpointFunction,
+} from "../../testing/mock-checkpoint";
 import { createCallback } from "./callback";
 import {
   ExecutionContext,
@@ -27,10 +31,11 @@ jest.mock("../../errors/serdes-errors/serdes-errors", () => ({
 }));
 
 import { safeDeserialize } from "../../errors/serdes-errors/serdes-errors";
+import { CallbackError } from "../../errors/callback-error/callback-error";
 
 describe("Callback Handler", () => {
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
-  let mockCheckpoint: jest.Mock;
+  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
   let createStepId: jest.Mock;
   let callbackHandler: ReturnType<typeof createCallback>;
   let mockTerminationManager: jest.Mocked<TerminationManager>;
@@ -50,7 +55,7 @@ describe("Callback Handler", () => {
       terminationManager: mockTerminationManager,
     });
 
-    mockCheckpoint = jest.fn().mockResolvedValue({});
+    mockCheckpoint = createMockCheckpoint();
     createStepId = jest.fn().mockReturnValue(TEST_CONSTANTS.CALLBACK_ID);
 
     mockSafeDeserialize = safeDeserialize as jest.MockedFunction<
@@ -93,7 +98,10 @@ describe("Callback Handler", () => {
 
       // Verify safeDeserialize was called with correct parameters
       expect(mockSafeDeserialize).toHaveBeenCalledWith(
-        defaultSerdes,
+        expect.objectContaining({
+          serialize: expect.any(Function),
+          deserialize: expect.any(Function),
+        }),
         "completed-result",
         TEST_CONSTANTS.CALLBACK_ID,
         "test-callback",
@@ -130,7 +138,10 @@ describe("Callback Handler", () => {
 
       // Verify safeDeserialize was called with undefined name
       expect(mockSafeDeserialize).toHaveBeenCalledWith(
-        defaultSerdes,
+        expect.objectContaining({
+          serialize: expect.any(Function),
+          deserialize: expect.any(Function),
+        }),
         "result-data",
         TEST_CONSTANTS.CALLBACK_ID,
         undefined,
@@ -138,6 +149,68 @@ describe("Callback Handler", () => {
         false,
         "test-arn",
       );
+    });
+
+    test("should use pass-through serdes that preserves data unchanged", async () => {
+      const stepId = TEST_CONSTANTS.CALLBACK_ID;
+      const hashedStepId = hashId(stepId);
+      const testData = "test data";
+
+      mockExecutionContext._stepData = {
+        [hashedStepId]: {
+          Id: hashedStepId,
+          Status: OperationStatus.SUCCEEDED,
+          CallbackDetails: {
+            CallbackId: "callback-passthrough",
+            Result: testData,
+          },
+        } as Operation,
+      };
+
+      // Mock safeDeserialize to call the actual serdes functions
+      (mockSafeDeserialize as jest.Mock).mockImplementation(
+        async (serdes, data) => {
+          const serialized = await serdes.serialize(data);
+          return await serdes.deserialize(serialized);
+        },
+      );
+
+      const [promise] = await callbackHandler<string>("passthrough-test");
+      const result = await promise;
+
+      expect(result).toBe(testData);
+    });
+
+    test("should handle non-JSON callback data with pass-through serdes", async () => {
+      const stepId = TEST_CONSTANTS.CALLBACK_ID;
+      const hashedStepId = hashId(stepId);
+      const nonJsonData = "plain text data";
+
+      mockExecutionContext._stepData = {
+        [hashedStepId]: {
+          Id: hashedStepId,
+          Status: OperationStatus.SUCCEEDED,
+          CallbackDetails: {
+            CallbackId: "callback-non-json",
+            Result: nonJsonData,
+          },
+        } as Operation,
+      };
+
+      (mockSafeDeserialize as jest.Mock).mockResolvedValue(nonJsonData);
+
+      const [promise, callbackId] =
+        await callbackHandler<string>("non-json-test");
+
+      expect(callbackId).toBe("callback-non-json");
+      const result = await promise;
+      expect(result).toBe(nonJsonData);
+
+      // Verify that pass-through serdes was used (not defaultSerdes)
+      const serdesArg = (mockSafeDeserialize as jest.Mock).mock.calls[0][0];
+      expect(serdesArg).not.toBe(defaultSerdes);
+      expect(typeof serdesArg.serialize).toBe("function");
+      expect(typeof serdesArg.deserialize).toBe("function");
     });
 
     test("should throw error if completed callback has no callback ID", async () => {
@@ -231,9 +304,12 @@ describe("Callback Handler", () => {
           Status: OperationStatus.FAILED,
           CallbackDetails: {
             CallbackId: "callback-failed-123",
-          },
-          StepDetails: {
-            Result: "Callback execution failed",
+            Error: {
+              ErrorData: "Error data",
+              ErrorMessage: "Callback execution failed",
+              ErrorType: "CallbackErrorType",
+              StackTrace: ["1", "2", "3"],
+            },
           },
         } as Operation,
       };
@@ -241,7 +317,22 @@ describe("Callback Handler", () => {
       const [promise, callbackId] =
         await callbackHandler<string>("failed-callback");
       expect(callbackId).toBe("callback-failed-123");
-      await expect(promise).rejects.toThrow("Callback execution failed");
+
+      await promise
+        .then(() => {
+          throw new Error("Expected callback to fail");
+        })
+        .catch((err: CallbackError) => {
+          expect(err).toBeInstanceOf(CallbackError);
+          expect(err.message).toEqual("Callback failed");
+          expect(err.data).toEqual("Error data");
+
+          const cause = err.cause;
+          expect(cause).toBeInstanceOf(Error);
+          expect(cause!.message).toEqual("Callback execution failed");
+          expect(cause!.name).toEqual("CallbackErrorType");
+          expect(cause!.stack).toEqual("1\n2\n3");
+        });
     });
 
     test("should throw generic error for failed callback without error message", async () => {
@@ -392,6 +483,54 @@ describe("Callback Handler", () => {
         "No callback ID found for started callback: test-callback-id",
       );
     });
+
+    test("should terminate when catch is called on started callback promise", async () => {
+      const stepId = TEST_CONSTANTS.CALLBACK_ID;
+      const hashedStepId = hashId(stepId);
+      mockExecutionContext._stepData = {
+        [hashedStepId]: {
+          Id: hashedStepId,
+          Status: OperationStatus.STARTED,
+          CallbackDetails: {
+            CallbackId: "catch-test-callback",
+          },
+        } as Operation,
+      };
+
+      const [promise] = await callbackHandler<string>("catch-test");
+
+      // Call catch on the promise - this should trigger termination
+      promise.catch(() => {});
+
+      expect(mockTerminationManager.terminate).toHaveBeenCalledWith({
+        reason: TerminationReason.CALLBACK_PENDING,
+        message: "Callback catch-test is pending external completion",
+      });
+    });
+
+    test("should terminate when finally is called on started callback promise", async () => {
+      const stepId = TEST_CONSTANTS.CALLBACK_ID;
+      const hashedStepId = hashId(stepId);
+      mockExecutionContext._stepData = {
+        [hashedStepId]: {
+          Id: hashedStepId,
+          Status: OperationStatus.STARTED,
+          CallbackDetails: {
+            CallbackId: "finally-test-callback",
+          },
+        } as Operation,
+      };
+
+      const [promise] = await callbackHandler<string>("finally-test");
+
+      // Call finally on the promise - this should trigger termination
+      promise.finally(() => {});
+
+      expect(mockTerminationManager.terminate).toHaveBeenCalledWith({
+        reason: TerminationReason.CALLBACK_PENDING,
+        message: "Callback finally-test is pending external completion",
+      });
+    });
   });
 
   describe("New Callback Creation Scenarios", () => {
@@ -523,7 +662,7 @@ describe("Callback Handler", () => {
 
     test("should throw error if callback ID not found after checkpoint", async () => {
       // Mock checkpoint to not update stepData with callback ID
-      mockCheckpoint.mockResolvedValue({});
+      mockCheckpoint.mockResolvedValue(undefined);
 
       await expect(
         callbackHandler<string>("missing-id-callback"),
@@ -688,7 +827,10 @@ describe("Callback Handler", () => {
       await promise;
 
       expect(mockSafeDeserialize).toHaveBeenCalledWith(
-        defaultSerdes,
+        expect.objectContaining({
+          serialize: expect.any(Function),
+          deserialize: expect.any(Function),
+        }),
         "verbose-result",
         TEST_CONSTANTS.CALLBACK_ID,
         "verbose-test",

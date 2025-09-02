@@ -8,6 +8,7 @@ import {
   OperationSubType,
 } from "../../types";
 import { log } from "../../utils/logger/logger";
+import { BatchResult } from "../concurrent-execution-handler/batch-result";
 
 export const createParallelHandler = (
   context: ExecutionContext,
@@ -17,7 +18,7 @@ export const createParallelHandler = (
     nameOrBranches: string | undefined | ParallelFunc<T>[],
     branchesOrConfig?: ParallelFunc<T>[] | ParallelConfig,
     maybeConfig?: ParallelConfig,
-  ): Promise<T[]> => {
+  ): Promise<BatchResult<T>> => {
     let name: string | undefined;
     let branches: ParallelFunc<T>[];
     let config: ParallelConfig | undefined;
@@ -68,40 +69,28 @@ export const createParallelHandler = (
         index: executionItem.index,
       });
 
-      try {
-        const result = await executionItem.data(childContext);
+      const result = await executionItem.data(childContext);
 
-        log(context.isVerbose, "✅", "Parallel branch completed:", {
-          index: executionItem.index,
-          result,
-        });
+      log(context.isVerbose, "✅", "Parallel branch completed:", {
+        index: executionItem.index,
+        result,
+      });
 
-        return result;
-      } catch (error) {
-        // TODO: Implement proper error handling pattern
-        // Current error handling is temporary until we implement comprehensive error handling for ctx.parallel
-        log(context.isVerbose, "❌", "Parallel branch failed:", {
-          index: executionItem.index,
-          error,
-        });
-
-        // For now any failure will fail the entire Parallel
-        // TODO: This is temporary approach before we add ParallelConfig
-        throw error;
-      }
+      return result;
     };
 
     // Delegate to the concurrent execution handler
-    const results = await executeConcurrently(name, executionItems, executor, {
+    const result = await executeConcurrently(name, executionItems, executor, {
       maxConcurrency: config?.maxConcurrency,
       topLevelSubType: OperationSubType.PARALLEL,
       iterationSubType: OperationSubType.PARALLEL_BRANCH,
+      completionConfig: config?.completionConfig,
     });
 
     log(context.isVerbose, "🔀", "Parallel operation completed successfully:", {
-      resultCount: results.length,
+      resultCount: result.totalCount,
     });
 
-    return results;
+    return result;
   };
 };

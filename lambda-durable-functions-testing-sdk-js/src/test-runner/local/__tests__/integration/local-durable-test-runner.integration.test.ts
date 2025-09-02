@@ -16,7 +16,7 @@ describe("LocalDurableTestRunner Integration", () => {
   it("should complete execution with wait operations", async () => {
     const handler = withDurableFunctions(
       async (event: unknown, context: DurableContext) => {
-        await context.wait(100, "wait");
+        await context.wait("wait", 100);
         return { success: true, step: "completed" };
       }
     );
@@ -56,12 +56,19 @@ describe("LocalDurableTestRunner Integration", () => {
     const result = await runner.run({ payload: { test: "error-case" } });
 
     // Check that error was captured in the result
-    expect(result.getError()).toEqual({
+    const error = result.getError();
+    expect(error).toEqual({
       errorMessage: "Intentional handler failure",
+      errorType: "Error",
+      stackTrace: expect.any(Array),
+    });
+    expect(error.stackTrace?.length).toBeGreaterThan(1);
+    error.stackTrace?.forEach((value) => {
+      expect(typeof value).toBe("string");
     });
   });
 
-  it("should execute simple handler without operations", async () => {
+  it("should execute simple handler without opAerations", async () => {
     const handler = withDurableFunctions((event: unknown) =>
       Promise.resolve({
         received: JSON.stringify(event),
@@ -101,8 +108,8 @@ describe("LocalDurableTestRunner Integration", () => {
   it("should handle multiple wait operations", async () => {
     const handler = withDurableFunctions(
       async (_event: unknown, context: DurableContext) => {
-        await context.wait(50000, "wait-1");
-        await context.wait(50000, "wait-2");
+        await context.wait("wait-1", 50000);
+        await context.wait("wait-2", 50000);
 
         return {
           completedWaits: 2,
@@ -229,7 +236,7 @@ describe("LocalDurableTestRunner Integration", () => {
         const stepResult = await context.runInChildContext(
           "parent-context",
           async (childContext) => {
-            await childContext.wait(1000, "child-wait");
+            await childContext.wait("child-wait", 1000);
 
             return Promise.resolve({ userId: 123, name: "John Doe" });
           }
@@ -297,8 +304,15 @@ describe("LocalDurableTestRunner Integration", () => {
 
     const result = await runner.run();
 
-    expect(result.getError()).toEqual({
+    const error = result.getError();
+    expect(error).toMatchObject({
+      errorType: "Error",
       errorMessage: "There was an error",
+      stackTrace: expect.any(Array),
+    });
+    expect(error.stackTrace?.length).toBeGreaterThan(1);
+    error.stackTrace?.forEach((value) => {
+      expect(typeof value).toBe("string");
     });
 
     // Verify operations were tracked
@@ -363,18 +377,18 @@ describe("LocalDurableTestRunner Integration", () => {
         const stepResult = await context.runInChildContext(
           "parent-context",
           async (childContext) => {
-            await childContext.wait(1000, "child-wait-1");
+            await childContext.wait("child-wait-1", 1000);
 
             await childContext.runInChildContext(
               "child-context",
               async (grandChildContext) => {
-                await grandChildContext.wait(1000, "grandchild-wait-1");
-                await grandChildContext.wait(1000, "grandchild-wait-2");
+                await grandChildContext.wait("grandchild-wait-1", 1000);
+                await grandChildContext.wait("grandchild-wait-2", 1000);
                 return "grandchild-context";
               }
             );
 
-            await childContext.wait(1000, "child-wait-2");
+            await childContext.wait("child-wait-2", 1000);
 
             return "parent-context";
           }
@@ -419,7 +433,7 @@ describe("LocalDurableTestRunner Integration", () => {
     const handler = withDurableFunctions(
       async (_event: unknown, context: DurableContext) => {
         // First wait operation - this will run in invocation index 0
-        await context.wait(1000, "wait-invocation-1");
+        await context.wait("wait-invocation-1", 1000);
 
         // This will execute in invocation index 1
         const stepResult = await context.step("process-data-step", () => {
@@ -427,7 +441,7 @@ describe("LocalDurableTestRunner Integration", () => {
         });
 
         // Second wait operation - this will run in invocation index 1
-        await context.wait(1000, "wait-invocation-2");
+        await context.wait("wait-invocation-2", 1000);
 
         // Third invocation will only return the result
         return {
@@ -512,9 +526,9 @@ describe("LocalDurableTestRunner Integration", () => {
       async (_event: unknown, context: DurableContext) => {
         // Use parallel to create multiple wait operations that schedule functions concurrently
         const results = await context.parallel([
-          () => context.wait(10, "parallel-wait-1"),
-          () => context.wait(15, "parallel-wait-2"),
-          () => context.wait(5, "parallel-wait-3"),
+          () => context.wait("parallel-wait-1", 10),
+          () => context.wait("parallel-wait-2", 15),
+          () => context.wait("parallel-wait-3", 5),
         ]);
 
         // This step runs after all parallel waits complete

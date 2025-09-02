@@ -92,8 +92,7 @@ describe("initializeExecutionContext", () => {
 
     // Verify
     expect(ExecutionStateFactory.createExecutionState).toHaveBeenCalledWith(
-      "https://dex.us-east-1.amazonaws.com",
-      "us-east-1",
+      false,
     );
     expect(result).toEqual(
       expect.objectContaining({
@@ -425,57 +424,23 @@ describe("initializeExecutionContext", () => {
     expect(result.executionContext._stepData).toEqual({});
   });
 
-  it("should use DexRegion from event payload when provided", async () => {
-    // Setup
-    const eventRegion = "ap-southeast-1";
-    process.env.DEX_REGION = "eu-west-1"; // Should be ignored
-    process.env.AWS_REGION = "us-west-2"; // Should be ignored
-
-    const eventWithDexRegion: DurableExecutionInvocationInput = {
+  it("should use LocalRunner flag to create LocalRunnerStorage", async () => {
+    const eventWithLocalRunner: DurableExecutionInvocationInput = {
       ...mockEvent,
-      DexRegion: eventRegion,
+      LocalRunner: true,
     };
 
     // Execute
-    await initializeExecutionContext(eventWithDexRegion);
+    const result = await initializeExecutionContext(eventWithLocalRunner);
 
     // Verify
     expect(ExecutionStateFactory.createExecutionState).toHaveBeenCalledWith(
-      "https://dex.us-east-1.amazonaws.com",
-      eventRegion,
+      true,
     );
 
     // Cleanup
+    delete process.env.DEX_ENDPOINT;
     delete process.env.DEX_REGION;
-    delete process.env.AWS_REGION;
-  });
-
-  it("should prioritize event DexRegion over all environment variables", async () => {
-    // Setup
-    const eventRegion = "ap-northeast-1";
-    const dexEnvRegion = "eu-central-1";
-    const awsEnvRegion = "ca-central-1";
-
-    process.env.DEX_REGION = dexEnvRegion;
-    process.env.AWS_REGION = awsEnvRegion;
-
-    const eventWithDexRegion: DurableExecutionInvocationInput = {
-      ...mockEvent,
-      DexRegion: eventRegion,
-    };
-
-    // Execute
-    await initializeExecutionContext(eventWithDexRegion);
-
-    // Verify - should use event DexRegion, not environment variables
-    expect(ExecutionStateFactory.createExecutionState).toHaveBeenCalledWith(
-      "https://dex.us-east-1.amazonaws.com",
-      eventRegion,
-    );
-
-    // Cleanup
-    delete process.env.DEX_REGION;
-    delete process.env.AWS_REGION;
   });
 
   it("should handle undefined operations in paginated response", async () => {

@@ -15,6 +15,7 @@ import {
   ConcurrentExecutionItem,
   ConcurrentExecutor,
   ConcurrencyConfig,
+  Logger,
 } from "../../types";
 import { Context } from "aws-lambda";
 import { createCheckpoint } from "../../utils/checkpoint/checkpoint";
@@ -28,6 +29,7 @@ import { createMapHandler } from "../../handlers/map-handler/map-handler";
 import { createParallelHandler } from "../../handlers/parallel-handler/parallel-handler";
 import { createPromiseHandler } from "../../handlers/promise-handler/promise-handler";
 import { createConcurrentExecutionHandler } from "../../handlers/concurrent-execution-handler/concurrent-execution-handler";
+import { setCustomLogger } from "../../utils/logger/structured-logger";
 
 export const createDurableContext = (
   executionContext: ExecutionContext,
@@ -151,6 +153,10 @@ export const createDurableContext = (
 
   const promise = createPromiseHandler(step);
 
+  const configureLogger = (logger: Logger): void => {
+    setCustomLogger(logger);
+  };
+
   return {
     ...parentContext,
     _stepPrefix: stepPrefix,
@@ -169,5 +175,6 @@ export const createDurableContext = (
     parallel,
     executeConcurrently,
     promise,
+    configureLogger,
   };
 };

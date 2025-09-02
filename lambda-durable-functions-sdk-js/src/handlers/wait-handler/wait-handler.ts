@@ -11,10 +11,22 @@ export const createWaitHandler = (
   checkpoint: ReturnType<typeof createCheckpoint>,
   createStepId: () => string,
 ) => {
-  return async (millis: number, name?: string | undefined): Promise<void> => {
+  function waitHandler(name: string, millis: number): Promise<void>;
+  function waitHandler(millis: number): Promise<void>;
+  async function waitHandler(
+    nameOrMillis: string | number,
+    millis?: number,
+  ): Promise<void> {
+    const isNameFirst = typeof nameOrMillis === "string";
+    const actualName = isNameFirst ? nameOrMillis : undefined;
+    const actualMillis = isNameFirst ? millis! : nameOrMillis;
     const stepId = createStepId();
 
-    log(context.isVerbose, "⏲️", "Wait requested:", { stepId, name, millis });
+    log(context.isVerbose, "⏲️", "Wait requested:", {
+      stepId,
+      name: actualName,
+      millis: actualMillis,
+    });
 
     if (context.getStepData(stepId)?.Status === OperationStatus.SUCCEEDED) {
       log(context.isVerbose, "⏭️", "Wait already completed:", { stepId });
@@ -23,7 +35,7 @@ export const createWaitHandler = (
 
     const wouldBeMocked = OperationInterceptor.forExecution(
       context.durableExecutionArn,
-    ).recordOnly(name);
+    ).recordOnly(actualName);
     if (wouldBeMocked) {
       throw new CheckpointFailedError("Wait step cannot be mocked");
     }
@@ -34,17 +46,19 @@ export const createWaitHandler = (
       Action: "START",
       SubType: OperationSubType.WAIT,
       Type: OperationType.WAIT,
-      Name: name,
+      Name: actualName,
       WaitOptions: {
-        WaitSeconds: millis / 1000,
+        WaitSeconds: actualMillis / 1000,
       },
     });
 
     context.terminationManager.terminate({
       reason: TerminationReason.WAIT_SCHEDULED,
-      message: `Operation ${name || stepId} scheduled to wait`,
+      message: `Operation ${actualName || stepId} scheduled to wait`,
     });
 
     return new Promise(() => {});
-  };
+  }
+
+  return waitHandler;
 };

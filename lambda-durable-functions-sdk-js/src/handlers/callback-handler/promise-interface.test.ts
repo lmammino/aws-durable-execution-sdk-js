@@ -18,9 +18,9 @@ describe("Callback Handler Promise Interface", () => {
     mockContext = createMockExecutionContext();
 
     // Mock checkpoint to simulate callback creation
-    mockCheckpoint = jest.fn().mockImplementation(async (stepId) => {
+    const mockCheckpointFn = jest.fn().mockImplementation(async (stepId) => {
       // Simulate the API response by updating stepData
-      const hashedStepId = hashId(stepId);
+      const hashedStepId = hashId(stepId) as any;
       mockContext._stepData[hashedStepId] = {
         Status: "STARTED" as any,
         CallbackDetails: {
@@ -28,6 +28,9 @@ describe("Callback Handler Promise Interface", () => {
         },
       };
     });
+    mockCheckpoint = Object.assign(mockCheckpointFn, {
+      force: jest.fn().mockResolvedValue(undefined),
+    }) as any;
   });
 
   describe("Promise Interface Compliance", () => {

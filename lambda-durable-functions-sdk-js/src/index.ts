@@ -18,6 +18,8 @@ export {
   WaitForConditionConfig,
   WaitForConditionDecision,
   WaitForConditionWaitStrategyFunc,
+  Logger,
+  Telemetry,
 } from "./types";
 export { StepInterruptedError } from "./errors/step-errors/step-errors";
 export { InvocationDefinition } from "./storage/record-definition-storage";
@@ -33,3 +35,7 @@ export {
   createWaitStrategy,
   WaitStrategyConfig,
 } from "./utils/wait-strategy/wait-strategy-config";
+export {
+  setCustomLogger,
+  StructuredLogger,
+} from "./utils/logger/structured-logger";

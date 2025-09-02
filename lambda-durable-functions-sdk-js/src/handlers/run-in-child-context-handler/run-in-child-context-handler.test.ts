@@ -4,6 +4,10 @@ import {
 } from "./run-in-child-context-handler";
 import { ExecutionContext, OperationSubType } from "../../types";
 import { TEST_CONSTANTS } from "../../testing/test-constants";
+import {
+  createMockCheckpoint,
+  CheckpointFunction,
+} from "../../testing/mock-checkpoint";
 import { createClassSerdesWithDates } from "../../utils/serdes/serdes";
 import {
   OperationType,
@@ -12,10 +16,11 @@ import {
 } from "@amzn/dex-internal-sdk";
 import { OperationInterceptor } from "../../mocks/operation-interceptor";
 import { hashId, getStepData } from "../../utils/step-id-utils/step-id-utils";
+import { createErrorObjectFromError } from "../../utils/error-object/error-object";
 
 describe("Run In Child Context Handler", () => {
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
-  let mockCheckpoint: jest.Mock;
+  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
   let mockParentContext: any;
   let createStepId: jest.Mock;
   let runInChildContextHandler: ReturnType<
@@ -46,7 +51,7 @@ describe("Run In Child Context Handler", () => {
       }),
     } as unknown as jest.Mocked<ExecutionContext>;
 
-    mockCheckpoint = jest.fn().mockResolvedValue({});
+    mockCheckpoint = createMockCheckpoint();
     mockParentContext = { awsRequestId: "mock-request-id" };
     createStepId = jest.fn().mockReturnValue(TEST_CONSTANTS.CHILD_CONTEXT_ID);
     runInChildContextHandler = createRunInChildContextHandler(
@@ -242,7 +247,7 @@ describe("Run In Child Context Handler", () => {
         Action: OperationAction.FAIL,
         SubType: OperationSubType.RUN_IN_CHILD_CONTEXT,
         Type: OperationType.CONTEXT,
-        Payload: "child-context-error",
+        Error: createErrorObjectFromError(error),
         Name: TEST_CONSTANTS.CHILD_CONTEXT_NAME,
       },
     );
@@ -263,7 +268,7 @@ describe("Run In Child Context Handler", () => {
         Action: OperationAction.FAIL,
         SubType: OperationSubType.RUN_IN_CHILD_CONTEXT,
         Type: OperationType.CONTEXT,
-        Payload: "Unknown error",
+        Error: createErrorObjectFromError("Unknown error"),
         Name: TEST_CONSTANTS.CHILD_CONTEXT_NAME,
       },
     );
@@ -418,7 +423,7 @@ describe("Run In Child Context Handler", () => {
           Action: OperationAction.FAIL,
           SubType: OperationSubType.RUN_IN_CHILD_CONTEXT,
           Type: OperationType.CONTEXT,
-          Payload: "child-context-error",
+          Error: createErrorObjectFromError(error),
           Name: TEST_CONSTANTS.CHILD_CONTEXT_NAME,
         },
       );
@@ -460,7 +465,7 @@ describe("runInChildContext with custom serdes", () => {
   }
 
   let mockExecutionContext: ExecutionContext;
-  let mockCheckpoint: jest.Mock;
+  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
   let mockParentContext: any;
   let mockCreateStepId: jest.Mock;
   let runInChildContext: ReturnType<typeof createRunInChildContextHandler>;
@@ -477,7 +482,7 @@ describe("runInChildContext with custom serdes", () => {
       }),
     } as any;
 
-    mockCheckpoint = jest.fn().mockResolvedValue(undefined);
+    mockCheckpoint = createMockCheckpoint();
     mockParentContext = { getRemainingTimeInMillis: () => 30000 };
     mockCreateStepId = jest.fn().mockReturnValue("test-step-id");
 
@@ -550,7 +555,7 @@ describe("runInChildContext with custom serdes", () => {
 
 describe("Mock Integration", () => {
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
-  let mockCheckpoint: jest.Mock;
+  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
   let mockParentContext: any;
   let createStepId: jest.Mock;
   let runInChildContextHandler: ReturnType<
@@ -577,7 +582,7 @@ describe("Mock Integration", () => {
       }),
     } as unknown as jest.Mocked<ExecutionContext>;
 
-    mockCheckpoint = jest.fn().mockResolvedValue({});
+    mockCheckpoint = createMockCheckpoint();
     mockParentContext = { awsRequestId: "mock-request-id" };
     createStepId = jest.fn().mockReturnValue(TEST_CONSTANTS.CHILD_CONTEXT_ID);
     runInChildContextHandler = createRunInChildContextHandler(
@@ -770,7 +775,8 @@ describe("Mock Integration", () => {
 
   test("should handle mock errors in child context execution", async () => {
     const originalChildFn = jest.fn().mockResolvedValue("original-result");
-    const mockCallback = jest.fn().mockRejectedValue(new Error("mock-error"));
+    const mockError = new Error("mock-error");
+    const mockCallback = jest.fn().mockRejectedValue(mockError);
 
     // Register a mock that throws an error
     OperationInterceptor.forExecution(mockExecutionContext.durableExecutionArn)
@@ -796,7 +802,7 @@ describe("Mock Integration", () => {
         Action: OperationAction.FAIL,
         SubType: OperationSubType.RUN_IN_CHILD_CONTEXT,
         Type: OperationType.CONTEXT,
-        Payload: "mock-error",
+        Error: createErrorObjectFromError(mockError),
         Name: TEST_CONSTANTS.CHILD_CONTEXT_NAME,
       },
     );

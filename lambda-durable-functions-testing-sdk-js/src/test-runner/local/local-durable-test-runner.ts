@@ -61,7 +61,8 @@ export class LocalDurableTestRunner<ResultType>
     this.operationIndex = new IndexedOperations([]);
     this.operationStorage = new OperationStorage(
       this.waitManager,
-      this.operationIndex
+      this.operationIndex,
+      this.waitManager.handleCheckpointReceived.bind(this.waitManager)
     );
     this.resultFormatter = new ResultFormatter<ResultType>();
 

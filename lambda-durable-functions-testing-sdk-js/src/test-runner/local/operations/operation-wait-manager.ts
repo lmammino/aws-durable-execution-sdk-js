@@ -1,24 +1,26 @@
-import { OperationStatus } from "@amzn/dex-internal-sdk";
+import {
+  Operation,
+  OperationStatus,
+  OperationType,
+} from "@amzn/dex-internal-sdk";
 import {
   DurableOperation,
   WaitingOperationStatus,
 } from "../../durable-test-runner";
 import { doesStatusMatch } from "./status-matcher";
+import { CheckpointOperation } from "../../../checkpoint-server/storage/checkpoint-manager";
 
-interface WaitingOperationInfo {
-  resolve: (mockOperation: DurableOperation<unknown>) => void;
+interface WaitingOperation {
+  operation: DurableOperation<unknown>;
+  resolve: () => void;
   expectedStatus: WaitingOperationStatus;
 }
 
 /**
  * Manages waiting operations and promise resolution for mock operations.
- * Separated from OperationStorage to maintain single responsibility principle.
  */
 export class OperationWaitManager {
-  private readonly operationsWaiting = new Map<
-    DurableOperation<unknown>,
-    Set<WaitingOperationInfo>
-  >();
+  private readonly waitingOperations = new Set<WaitingOperation>();
 
   /**
    * Creates a promise that resolves when the specified operation reaches the expected status.
@@ -31,52 +33,100 @@ export class OperationWaitManager {
     status: WaitingOperationStatus
   ): Promise<DurableOperation<unknown>> {
     return new Promise<DurableOperation<unknown>>((resolve) => {
-      const operationsWaiting =
-        this.operationsWaiting.get(operation) ??
-        new Set<WaitingOperationInfo>();
-
-      operationsWaiting.add({
-        resolve,
+      this.waitingOperations.add({
+        operation,
+        resolve: () => {
+          resolve(operation);
+        },
         expectedStatus: status,
       });
+    });
+  }
 
-      this.operationsWaiting.set(operation, operationsWaiting);
+  private shouldResolveParent(operation: Operation): boolean {
+    return (
+      operation.Type === OperationType.CALLBACK &&
+      operation.ParentId !== undefined
+    );
+  }
+
+  /**
+   * Handles checkpoint operations and resolves waiting operations.
+   * @param checkpointOperationsReceived All checkpoint operations received
+   * @param trackedDurableOperations Operations that just got populated with data
+   */
+  handleCheckpointReceived(
+    checkpointOperationsReceived: CheckpointOperation[],
+    trackedDurableOperations: DurableOperation<unknown>[]
+  ): void {
+    // Handle callback operations
+    checkpointOperationsReceived
+      .filter(({ operation }) => this.shouldResolveParent(operation))
+      .forEach(({ operation }) => {
+        const parentId = operation.ParentId;
+        if (parentId) {
+          this.resolveOperationsByParentId(parentId, operation.Status);
+        }
+      });
+
+    // Handle operations that are tracked
+    trackedDurableOperations.forEach((op) => {
+      const status = op.getStatus();
+      this.resolveMatchingOperations(op, status);
+    });
+  }
+
+  private shouldBeResolvedByParent(
+    operation: DurableOperation<unknown>
+  ): boolean {
+    return operation.isWaitForCallback();
+  }
+
+  /**
+   * Resolves waiting operations that match the given operation and status.
+   */
+  private resolveMatchingOperations(
+    operation: DurableOperation<unknown>,
+    status?: OperationStatus
+  ): void {
+    const toResolve = Array.from(this.waitingOperations).filter(
+      (waiting) =>
+        waiting.operation === operation &&
+        !this.shouldBeResolvedByParent(waiting.operation) &&
+        doesStatusMatch(status, waiting.expectedStatus)
+    );
+
+    toResolve.forEach((waiting) => {
+      waiting.resolve();
+      this.waitingOperations.delete(waiting);
     });
   }
 
   /**
-   * Attempts to resolve any waiting operations for the given mock operation.
-   * Called when operation data is updated.
-   * @param mockOperation The mock operation that was updated
-   * @param status The current status of the operation object
+   * Resolves waiting operations by matching parent operation ID (for callbacks).
    */
-  tryResolveWaitingOperations(
-    mockOperation: DurableOperation<unknown>,
-    status: OperationStatus | undefined
+  private resolveOperationsByParentId(
+    parentId: string,
+    status?: OperationStatus
   ): void {
-    const waitingOperationsSet = this.operationsWaiting.get(mockOperation);
-    if (!waitingOperationsSet) {
-      return;
-    }
+    const toResolve = Array.from(this.waitingOperations).filter(
+      (waiting) =>
+        waiting.operation.getId() === parentId &&
+        this.shouldBeResolvedByParent(waiting.operation) &&
+        doesStatusMatch(status, waiting.expectedStatus)
+    );
 
-    for (const waitingOperation of waitingOperationsSet) {
-      if (doesStatusMatch(status, waitingOperation.expectedStatus)) {
-        waitingOperationsSet.delete(waitingOperation);
-        waitingOperation.resolve(mockOperation);
-      }
-    }
-
-    // Clean up empty sets
-    if (waitingOperationsSet.size === 0) {
-      this.operationsWaiting.delete(mockOperation);
-    }
+    toResolve.forEach((waiting) => {
+      waiting.resolve();
+      this.waitingOperations.delete(waiting);
+    });
   }
 
   /**
    * Clears all waiting operations. Useful for cleanup.
    */
   clearWaitingOperations(): void {
-    this.operationsWaiting.clear();
+    this.waitingOperations.clear();
   }
 
   /**
@@ -85,10 +135,6 @@ export class OperationWaitManager {
    * @returns The total number of waiting operations
    */
   getWaitingOperationsCount(): number {
-    let totalCount = 0;
-    for (const waitingSet of this.operationsWaiting.values()) {
-      totalCount += waitingSet.size;
-    }
-    return totalCount;
+    return this.waitingOperations.size;
   }
 }

@@ -38,8 +38,8 @@ export class RecordDefinitionStorage extends ApiStorage {
     response: undefined,
   };
 
-  constructor(endpoint: string, region: string) {
-    super(endpoint, region);
+  constructor() {
+    super();
   }
 
   async getStepData(

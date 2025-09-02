@@ -12,6 +12,7 @@ import {
 import { CheckpointOperation } from "../../../checkpoint-server/storage/checkpoint-manager";
 import {
   DurableOperation,
+  TestResultError,
   WaitingOperationStatus,
 } from "../../durable-test-runner";
 import { getDurableExecutionsClient } from "../../local/api-client/durable-executions-client";
@@ -19,22 +20,24 @@ import { OperationWaitManager } from "../../local/operations/operation-wait-mana
 import { doesStatusMatch } from "../../local/operations/status-matcher";
 import { tryJsonParse } from "../utils";
 import { IndexedOperations } from "../indexed-operations";
+import { transformErrorObjectToErrorResult } from "../../../utils";
+import { OperationSubType } from "@amzn/durable-executions-language-sdk";
 
 export interface OperationResultContextDetails<ResultValue = unknown> {
   readonly result: ResultValue | undefined;
-  readonly error: ErrorObject | undefined;
+  readonly error: TestResultError | undefined;
 }
 
 export interface OperationResultStepDetails<ResultValue = unknown> {
   readonly attempt: number | undefined;
   readonly nextAttemptTimestamp: Date | undefined;
   readonly result: ResultValue | undefined;
-  readonly error: ErrorObject | undefined;
+  readonly error: TestResultError | undefined;
 }
 
 export interface OperationResultCallbackDetails<ResultValue = unknown> {
   readonly callbackId: string;
-  readonly error?: ErrorObject;
+  readonly error?: TestResultError;
   readonly result?: ResultValue;
 }
 
@@ -93,7 +96,7 @@ export class OperationWithData<OperationResultValue = unknown>
 
     return {
       result: tryJsonParse(contextDetails?.Result),
-      error: contextDetails?.Error,
+      error: transformErrorObjectToErrorResult(contextDetails?.Error),
     };
   }
 
@@ -116,7 +119,38 @@ export class OperationWithData<OperationResultValue = unknown>
       attempt: stepDetails?.Attempt,
       nextAttemptTimestamp: stepDetails?.NextAttemptTimestamp,
       result: tryJsonParse(stepDetails?.Result),
-      error: stepDetails?.Error,
+      error: transformErrorObjectToErrorResult(stepDetails?.Error),
+    };
+  }
+
+  private getWaitForCallbackDetails():
+    | OperationResultCallbackDetails<OperationResultValue>
+    | undefined {
+    const createCallbackOperation = this.getChildOperations()
+      ?.find((operation) => operation.getType() === OperationType.CALLBACK)
+      ?.getOperationData();
+
+    if (!createCallbackOperation) {
+      throw new Error(
+        "Could not find CALLBACK operation in WAIT_FOR_CALLBACK context"
+      );
+    }
+
+    return this.getCreateCallbackDetails(createCallbackOperation);
+  }
+
+  private getCreateCallbackDetails(
+    operationData: Operation
+  ): OperationResultCallbackDetails<OperationResultValue> | undefined {
+    const callbackDetails = operationData.CallbackDetails;
+    if (callbackDetails?.CallbackId === undefined) {
+      throw new Error("Could not find callback ID in callback details");
+    }
+
+    return {
+      callbackId: callbackDetails.CallbackId,
+      error: transformErrorObjectToErrorResult(callbackDetails.Error),
+      result: tryJsonParse(callbackDetails.Result),
     };
   }
 
@@ -129,23 +163,20 @@ export class OperationWithData<OperationResultValue = unknown>
       return undefined;
     }
 
-    // TODO: also check the operation subtype (when it is added)
-    if (operationData.Type !== OperationType.CALLBACK) {
-      throw new Error(`Operation type ${operationData.Type} is not CALLBACK`);
+    if (operationData.Type === OperationType.CALLBACK) {
+      return this.getCreateCallbackDetails(operationData);
     }
 
-    const callbackDetails = operationData.CallbackDetails;
-
-    const callbackId = operationData.CallbackDetails?.CallbackId;
-    if (callbackId === undefined) {
-      throw new Error("Could not find callback ID in callback details");
+    if (
+      operationData.Type === OperationType.CONTEXT &&
+      operationData.SubType === OperationSubType.WAIT_FOR_CALLBACK
+    ) {
+      return this.getWaitForCallbackDetails();
     }
 
-    return {
-      callbackId,
-      error: callbackDetails?.Error,
-      result: tryJsonParse(callbackDetails?.Result),
-    };
+    throw new Error(
+      `Operation with Type ${operationData.Type} and SubType ${operationData.SubType} is not a valid callback`
+    );
   }
 
   getWaitDetails(): WaitResultDetails | undefined {
@@ -200,12 +231,32 @@ export class OperationWithData<OperationResultValue = unknown>
     return this.checkpointOperationData?.operation.Id;
   }
 
+  getParentId(): string | undefined {
+    return this.checkpointOperationData?.operation.ParentId;
+  }
+
   getName(): string | undefined {
     return this.checkpointOperationData?.operation.Name;
   }
 
   getType(): OperationType | undefined {
     return this.checkpointOperationData?.operation.Type;
+  }
+
+  getSubType(): OperationSubType | undefined {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    return this.checkpointOperationData?.operation.SubType as OperationSubType;
+  }
+
+  isWaitForCallback(): boolean {
+    return (
+      this.getType() === OperationType.CONTEXT &&
+      this.getSubType() === OperationSubType.WAIT_FOR_CALLBACK
+    );
+  }
+
+  isCallback(): boolean {
+    return this.getType() === OperationType.CALLBACK;
   }
 
   getStatus(): OperationStatus | undefined {

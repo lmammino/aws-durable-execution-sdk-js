@@ -2,57 +2,51 @@ import { MockOperation } from "./mock-operation";
 import { IndexedOperations } from "../../common/indexed-operations";
 import { CheckpointOperation } from "../../../checkpoint-server/storage/checkpoint-manager";
 import { ExecutionId } from "../../../checkpoint-server/utils/tagged-strings";
-import { OperationWaitManager } from "./operation-wait-manager";
 import { OperationWithData } from "../../common/operations/operation-with-data";
 import { OperationType } from "@amzn/dex-internal-sdk";
+import { DurableOperation } from "../../durable-test-runner";
+import { OperationWaitManager } from "./operation-wait-manager";
 
 export class OperationStorage {
   private readonly mockOperations: MockOperation[] = [];
 
   constructor(
     private readonly waitManager: OperationWaitManager,
-    private readonly indexedOperations: IndexedOperations
+    private readonly indexedOperations: IndexedOperations,
+    private readonly onCheckpointReceived: (
+      checkpointOperationsReceived: CheckpointOperation[],
+      trackedDurableOperations: DurableOperation<unknown>[]
+    ) => void
   ) {}
 
-  private populateMockOperation(mockOperation: MockOperation) {
-    if (mockOperation._mockId !== undefined) {
-      const data = this.indexedOperations.getById(mockOperation._mockId);
-      if (data) {
-        mockOperation.populateData(data);
-        this.waitManager.tryResolveWaitingOperations(
-          mockOperation,
-          data.operation.Status
-        );
-      }
-      return;
-    }
+  private populateMockOperation(mockOperation: MockOperation): boolean {
+    // Strategy pattern for population
+    const strategies = [
+      () =>
+        mockOperation._mockId !== undefined
+          ? this.indexedOperations.getById(mockOperation._mockId)
+          : null,
+      () =>
+        mockOperation._mockName !== undefined
+          ? this.indexedOperations.getByNameAndIndex(
+              mockOperation._mockName,
+              mockOperation._mockIndex
+            )
+          : null,
+      () =>
+        mockOperation._mockIndex !== undefined
+          ? this.indexedOperations.getByIndex(mockOperation._mockIndex)
+          : null,
+    ];
 
-    if (mockOperation._mockName !== undefined) {
-      const data = this.indexedOperations.getByNameAndIndex(
-        mockOperation._mockName,
-        mockOperation._mockIndex
-      );
+    for (const strategy of strategies) {
+      const data = strategy();
       if (data) {
         mockOperation.populateData(data);
-        this.waitManager.tryResolveWaitingOperations(
-          mockOperation,
-          data.operation.Status
-        );
+        return true; // Indicates operation was populated
       }
-      return;
     }
-
-    if (mockOperation._mockIndex !== undefined) {
-      const data = this.indexedOperations.getByIndex(mockOperation._mockIndex);
-      if (data) {
-        mockOperation.populateData(data);
-        this.waitManager.tryResolveWaitingOperations(
-          mockOperation,
-          data.operation.Status
-        );
-      }
-      return;
-    }
+    return false; // No data found
   }
 
   getCompletedOperations(): OperationWithData[] {
@@ -80,20 +74,27 @@ export class OperationStorage {
 
   /**
    * Will be run every time checkpoint data is received.
-   * @param checkpointOperations
+   * @param newCheckpointOperations
    */
-  populateOperations(checkpointOperations: CheckpointOperation[]) {
-    if (!checkpointOperations.length) {
+  populateOperations(newCheckpointOperations: CheckpointOperation[]): void {
+    if (!newCheckpointOperations.length) {
       return;
     }
 
-    this.indexedOperations.addOperations(checkpointOperations);
+    this.indexedOperations.addOperations(newCheckpointOperations);
 
-    // TODO: consider optimizing the list iteration
-    // we call this every time we get checkpoint data
+    // Track which operations actually got populated
+    const trackedOperations: DurableOperation<unknown>[] = [];
+
     for (const mockOperation of this.mockOperations) {
-      this.populateMockOperation(mockOperation);
+      const wasPopulated = this.populateMockOperation(mockOperation);
+      if (wasPopulated) {
+        trackedOperations.push(mockOperation);
+      }
     }
+
+    // Notify via callback
+    this.onCheckpointReceived(newCheckpointOperations, trackedOperations);
   }
 
   registerOperation(operation: MockOperation) {

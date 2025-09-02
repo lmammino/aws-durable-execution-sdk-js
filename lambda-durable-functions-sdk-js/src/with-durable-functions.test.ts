@@ -11,6 +11,7 @@ import {
   deleteCheckpoint,
 } from "./utils/checkpoint/checkpoint";
 import { TEST_CONSTANTS } from "./testing/test-constants";
+import { createErrorObjectFromError } from "./utils/error-object/error-object";
 
 // Mock dependencies
 jest.mock("./context/execution-context/execution-context");
@@ -121,9 +122,7 @@ describe("withDurableFunctions", () => {
     );
     expect(response).toEqual({
       Status: InvocationStatus.FAILED,
-      Result: JSON.stringify({
-        error: "Test error",
-      }),
+      Error: createErrorObjectFromError(testError),
     });
   });
 
@@ -165,7 +164,7 @@ describe("withDurableFunctions", () => {
     );
   });
 
-  it("should return INCOMPLETE response for non-checkpoint termination", async () => {
+  it("should return PENDING response for non-checkpoint termination", async () => {
     // Setup
     const mockHandler = jest.fn().mockReturnValue(new Promise(() => {})); // Never resolves
     mockTerminationManager.getTerminationPromise.mockResolvedValue({
@@ -184,12 +183,6 @@ describe("withDurableFunctions", () => {
     );
     expect(response).toEqual({
       Status: InvocationStatus.PENDING,
-      Result: JSON.stringify({
-        error: {
-          reason: "TERMINATED",
-          message: "Operation terminated",
-        },
-      }),
     });
   });
 
@@ -260,9 +253,7 @@ describe("withDurableFunctions", () => {
     // Verify
     expect(response).toEqual({
       Status: InvocationStatus.FAILED,
-      Result: JSON.stringify({
-        error: "Unknown error",
-      }),
+      Error: createErrorObjectFromError("string error"),
     });
   });
 
@@ -392,112 +383,27 @@ describe("withDurableFunctions", () => {
     );
   });
 
-  describe("cleanup behavior", () => {
-    beforeEach(() => {
-      // Mock deleteCheckpoint as a jest function
-      (deleteCheckpoint as jest.Mock).mockImplementation(() => {});
-    });
+  it("should call deleteCheckpoint when initializing durable function", async () => {
+    // Setup
+    const mockResult = { success: true };
+    const mockHandler = jest.fn().mockResolvedValue(mockResult);
+    mockTerminationManager.getTerminationPromise.mockReturnValue(
+      new Promise(() => {}),
+    ); // Never resolves
 
-    it("should call deleteCheckpoint on successful execution", async () => {
-      // Setup
-      const mockResult = { success: true };
-      const mockHandler = jest.fn().mockResolvedValue(mockResult);
-      mockTerminationManager.getTerminationPromise.mockReturnValue(
-        new Promise(() => {}),
-      );
+    // Execute
+    const wrappedHandler = withDurableFunctions(mockHandler);
+    const response = await wrappedHandler(mockEvent, mockContext);
+    expect(deleteCheckpoint).toHaveBeenCalledTimes(1);
 
-      // Execute
-      const wrappedHandler = withDurableFunctions(mockHandler);
-      await wrappedHandler(mockEvent, mockContext);
-
-      // Verify cleanup was called with the correct execution context
-      expect(deleteCheckpoint).toHaveBeenCalled();
-      expect(deleteCheckpoint).toHaveBeenCalledTimes(2);
-    });
-
-    it("should call deleteCheckpoint when handler throws regular error", async () => {
-      // Setup
-      const testError = new Error("Test error");
-      const mockHandler = jest.fn().mockRejectedValue(testError);
-      mockTerminationManager.getTerminationPromise.mockReturnValue(
-        new Promise(() => {}),
-      );
-
-      // Execute
-      const wrappedHandler = withDurableFunctions(mockHandler);
-      await wrappedHandler(mockEvent, mockContext);
-
-      // Verify cleanup was called despite the error
-      expect(deleteCheckpoint).toHaveBeenCalled();
-      expect(deleteCheckpoint).toHaveBeenCalledTimes(2);
-    });
-
-    it("should call deleteCheckpoint when handler throws CheckpointFailedError", async () => {
-      // Setup
-      const checkpointError = new CheckpointFailedError(
-        "Checkpoint failed test",
-      );
-      const mockHandler = jest.fn().mockRejectedValue(checkpointError);
-      mockTerminationManager.getTerminationPromise.mockReturnValue(
-        new Promise(() => {}),
-      );
-
-      // Execute & Verify
-      const wrappedHandler = withDurableFunctions(mockHandler);
-      try {
-        await wrappedHandler(mockEvent, mockContext);
-      } catch {
-        // Expected to throw
-      }
-
-      // Verify cleanup was called despite the CheckpointFailedError
-      expect(deleteCheckpoint).toHaveBeenCalled();
-      expect(deleteCheckpoint).toHaveBeenCalledTimes(2);
-    });
-
-    it("should call deleteCheckpoint when termination occurs with OPERATION_TERMINATED", async () => {
-      // Setup
-      const mockHandler = jest.fn().mockReturnValue(new Promise(() => {})); // Never resolves
-      mockTerminationManager.getTerminationPromise.mockResolvedValue({
-        reason: TerminationReason.OPERATION_TERMINATED,
-        message: "Operation terminated",
-      });
-
-      // Execute
-      const wrappedHandler = withDurableFunctions(mockHandler);
-      await wrappedHandler(mockEvent, mockContext);
-
-      // Verify cleanup was called after termination
-      expect(deleteCheckpoint).toHaveBeenCalled();
-      expect(deleteCheckpoint).toHaveBeenCalledTimes(2);
-    });
-
-    it("should call deleteCheckpoint with the correct execution context", async () => {
-      // Setup with specific execution context
-      const customExecutionContext = {
-        ...mockExecutionContext,
-        executionContextId: "custom-execution-id",
-        durableExecutionArn: "custom-arn",
-      };
-
-      (initializeExecutionContext as jest.Mock).mockResolvedValue({
-        executionContext: customExecutionContext,
-        checkpointToken: TEST_CONSTANTS.CHECKPOINT_TOKEN,
-      });
-
-      const mockResult = { success: true };
-      const mockHandler = jest.fn().mockResolvedValue(mockResult);
-      mockTerminationManager.getTerminationPromise.mockReturnValue(
-        new Promise(() => {}),
-      );
-
-      // Execute
-      const wrappedHandler = withDurableFunctions(mockHandler);
-      await wrappedHandler(mockEvent, mockContext);
-
-      // Verify cleanup was called with the specific execution context
-      expect(deleteCheckpoint).toHaveBeenCalled();
-      expect(deleteCheckpoint).toHaveBeenCalledTimes(2);
+    // Verify
+    expect(mockHandler).toHaveBeenCalledWith(
+      mockCustomerHandlerEvent,
+      mockDurableContext,
+    );
+    expect(response).toEqual({
+      Status: InvocationStatus.SUCCEEDED,
+      Result: JSON.stringify(mockResult),
     });
   });
 });

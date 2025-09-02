@@ -1,4 +1,6 @@
+import { ErrorObject } from "@amzn/dex-internal-sdk";
 import type { ConvertDatesToNumbers } from "./types";
+import { TestResultError } from "./test-runner";
 
 /**
  * Type-safe map values function that traverses objects and arrays
@@ -62,4 +64,19 @@ export function convertDatesToTimestamps<T>(obj: T): ConvertDatesToNumbers<T> {
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   return result as ConvertDatesToNumbers<T>;
+}
+
+export function transformErrorObjectToErrorResult(
+  error: ErrorObject | undefined
+): TestResultError | undefined {
+  if (!error) {
+    return undefined;
+  }
+
+  return {
+    errorData: error.ErrorData,
+    errorMessage: error.ErrorMessage,
+    errorType: error.ErrorType,
+    stackTrace: error.StackTrace ? Array.from(error.StackTrace) : undefined,
+  };
 }

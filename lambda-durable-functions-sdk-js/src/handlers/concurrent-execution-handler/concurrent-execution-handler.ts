@@ -1,13 +1,14 @@
-import { ExecutionContext, DurableContext } from "../../types";
+import { ExecutionContext, DurableContext, BatchItemStatus } from "../../types";
 import { log } from "../../utils/logger/logger";
+import { BatchResult, BatchItem, BatchResultImpl } from "./batch-result";
 
 /**
  * Represents an item to be executed with metadata for deterministic replay
  */
 export interface ConcurrentExecutionItem<T> {
-  id: string; // Optional identifier for logging/observability
-  data: T; // The actual data to process
-  index: number; // Position in original array for result ordering
+  id: string;
+  data: T;
+  index: number;
 }
 
 /**
@@ -17,7 +18,6 @@ export interface ConcurrencyConfig {
   maxConcurrency?: number;
   topLevelSubType?: string;
   iterationSubType?: string;
-  // Future: completionConfig for advanced scenarios
   completionConfig?: {
     minSuccessful?: number;
     toleratedFailureCount?: number;
@@ -33,31 +33,29 @@ export type ConcurrentExecutor<TItem, TResult> = (
   childContext: DurableContext,
 ) => Promise<TResult>;
 
-/**
- * Result of an execution item, either success or failure
- */
-interface ExecutionResult<R> {
-  index: number;
-  result?: R;
-  error?: Error;
-}
-
 export class ConcurrencyController {
   constructor(
     private readonly isVerbose: boolean,
     private readonly operationName: string,
   ) {}
 
-  /**
-   * Execute items with controlled concurrency
-   */
   async executeItems<T, R>(
     items: ConcurrentExecutionItem<T>[],
     executor: ConcurrentExecutor<T, R>,
     parentContext: DurableContext,
     config: ConcurrencyConfig,
-  ): Promise<R[]> {
+  ): Promise<BatchResult<R>> {
     const maxConcurrency = config.maxConcurrency || Infinity;
+    const resultItems: Array<BatchItem<R> | undefined> = new Array(
+      items.length,
+    );
+    const startedItems = new Set<number>();
+
+    let activeCount = 0;
+    let currentIndex = 0;
+    let completedCount = 0;
+    let successCount = 0;
+    let failureCount = 0;
 
     log(
       this.isVerbose,
@@ -69,110 +67,169 @@ export class ConcurrencyController {
       },
     );
 
-    // Initialize results array with correct length
-    const results: R[] = new Array(items.length);
-    const executionResults: ExecutionResult<R>[] = [];
-    const executing = new Set<Promise<void>>();
-    let currentIndex = 0;
-    let hasErrors = false;
+    return new Promise<BatchResult<R>>((resolve) => {
+      const shouldContinue = (): boolean => {
+        const completion = config.completionConfig;
+        if (!completion) return failureCount === 0;
 
-    const executeNext = async (): Promise<void> => {
-      const index = currentIndex++;
-      const item = items[index];
+        if (
+          completion.toleratedFailureCount !== undefined &&
+          failureCount > completion.toleratedFailureCount
+        )
+          return false;
 
-      log(this.isVerbose, "▶️", `Starting ${this.operationName} item:`, {
-        index,
-        itemId: item.id,
-      });
-
-      try {
-        // Create child context for this item
-        const result = await parentContext.runInChildContext(
-          item.id,
-          (childContext) => executor(item, childContext),
-          { subType: config.iterationSubType },
-        );
-
-        executionResults.push({ index, result });
-
-        log(this.isVerbose, "✅", `${this.operationName} item completed:`, {
-          index,
-          itemId: item.id,
-        });
-      } catch (error) {
-        executionResults.push({
-          index,
-          error: error instanceof Error ? error : new Error(String(error)),
-        });
-        hasErrors = true;
-
-        log(this.isVerbose, "❌", `${this.operationName} item failed:`, {
-          index,
-          itemId: item.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
-
-    // Start initial batch up to maxConcurrency
-    const initialBatchSize = Math.min(maxConcurrency, items.length);
-    for (let i = 0; i < initialBatchSize; i++) {
-      const promise = executeNext();
-      executing.add(promise);
-      promise.finally(() => executing.delete(promise));
-    }
-
-    // Continue until all items are processed
-    while (executing.size > 0 || currentIndex < items.length) {
-      if (executing.size < maxConcurrency && currentIndex < items.length) {
-        // Start next item if we have capacity and items remaining
-        const promise = executeNext();
-        executing.add(promise);
-        promise.finally(() => executing.delete(promise));
-      } else {
-        // Wait for at least one to complete
-        await Promise.race(executing);
-      }
-    }
-
-    // Process results in original order
-    // TODO: Replace 'as any' with proper union type (Array<R | Error>) when implementing comprehensive error handling
-    // Currently using 'as any' as temporary solution until error handling strategy is implemented
-    for (const executionResult of executionResults) {
-      if (executionResult.error) {
-        results[executionResult.index] = executionResult.error as any; // Will be thrown later
-      } else {
-        results[executionResult.index] = executionResult.result!;
-      }
-    }
-
-    // Check for errors and throw the first one
-    // TODO: This is temporary error handling - will be replaced with completionConfig implementation
-    // completionConfig will allow configuring: fail-fast, collect-all-errors, partial-success, etc.
-    if (hasErrors) {
-      for (let i = 0; i < results.length; i++) {
-        if (results[i] instanceof Error) {
-          log(
-            this.isVerbose,
-            "💥",
-            `${this.operationName} failed due to error in item ${i}`,
-          );
-          throw results[i];
+        if (completion.toleratedFailurePercentage !== undefined) {
+          const failurePercentage = (failureCount / items.length) * 100;
+          if (failurePercentage > completion.toleratedFailurePercentage)
+            return false;
         }
-      }
-    }
 
-    log(this.isVerbose, "🎉", `${this.operationName} completed successfully:`, {
-      resultCount: results.length,
+        return true;
+      };
+
+      const isComplete = (): boolean => {
+        const completion = config.completionConfig;
+
+        if (completedCount === items.length) {
+          return (
+            !completion ||
+            failureCount === 0 ||
+            (completion.minSuccessful !== undefined &&
+              successCount >= completion.minSuccessful)
+          );
+        }
+
+        if (
+          completion?.minSuccessful !== undefined &&
+          successCount >= completion.minSuccessful
+        ) {
+          return true;
+        }
+
+        return false;
+      };
+
+      const getCompletionReason = ():
+        | "ALL_COMPLETED"
+        | "MIN_SUCCESSFUL_REACHED"
+        | "FAILURE_TOLERANCE_EXCEEDED" => {
+        if (completedCount === items.length) return "ALL_COMPLETED";
+        if (
+          config.completionConfig?.minSuccessful !== undefined &&
+          successCount >= config.completionConfig.minSuccessful
+        )
+          return "MIN_SUCCESSFUL_REACHED";
+        return "FAILURE_TOLERANCE_EXCEEDED";
+      };
+
+      const tryStartNext = () => {
+        while (
+          activeCount < maxConcurrency &&
+          currentIndex < items.length &&
+          shouldContinue()
+        ) {
+          const index = currentIndex++;
+          const item = items[index];
+
+          startedItems.add(index);
+          activeCount++;
+
+          // Set STARTED status immediately in result array
+          resultItems[index] = { index, status: BatchItemStatus.STARTED };
+
+          log(this.isVerbose, "▶️", `Starting ${this.operationName} item:`, {
+            index,
+            itemId: item.id,
+          });
+
+          parentContext
+            .runInChildContext(
+              item.id,
+              (childContext) => executor(item, childContext),
+              { subType: config.iterationSubType },
+            )
+            .then(
+              (result) => {
+                resultItems[index] = {
+                  result,
+                  index,
+                  status: BatchItemStatus.SUCCEEDED,
+                };
+                successCount++;
+                log(
+                  this.isVerbose,
+                  "✅",
+                  `${this.operationName} item completed:`,
+                  {
+                    index,
+                    itemId: item.id,
+                  },
+                );
+                onComplete();
+              },
+              (error) => {
+                const err =
+                  error instanceof Error ? error : new Error(String(error));
+                resultItems[index] = {
+                  error: err,
+                  index,
+                  status: BatchItemStatus.FAILED,
+                };
+                failureCount++;
+                log(
+                  this.isVerbose,
+                  "❌",
+                  `${this.operationName} item failed:`,
+                  {
+                    index,
+                    itemId: item.id,
+                    error: err.message,
+                  },
+                );
+                onComplete();
+              },
+            );
+        }
+      };
+
+      const onComplete = () => {
+        activeCount--;
+        completedCount++;
+
+        if (isComplete() || !shouldContinue()) {
+          // Convert sparse array to dense array - items are already in correct order by index
+          // Include all items that were started (have a value in resultItems)
+          const finalBatchItems: BatchItem<R>[] = [];
+          for (let i = 0; i < resultItems.length; i++) {
+            if (resultItems[i] !== undefined) {
+              finalBatchItems.push(resultItems[i]!);
+            }
+          }
+
+          log(this.isVerbose, "🎉", `${this.operationName} completed:`, {
+            successCount,
+            failureCount,
+            startedCount: finalBatchItems.filter(
+              (item) => item.status === BatchItemStatus.STARTED,
+            ).length,
+            totalCount: finalBatchItems.length,
+          });
+
+          const result = new BatchResultImpl(
+            finalBatchItems,
+            getCompletionReason(),
+          );
+          resolve(result);
+        } else {
+          tryStartNext();
+        }
+      };
+
+      tryStartNext();
     });
-
-    return results;
   }
 }
 
-/**
- * Create the concurrent execution handler
- */
 export const createConcurrentExecutionHandler = (
   context: ExecutionContext,
   runInChildContext: DurableContext["runInChildContext"],
@@ -184,13 +241,12 @@ export const createConcurrentExecutionHandler = (
       | ConcurrentExecutor<TItem, TResult>,
     executorOrConfig?: ConcurrentExecutor<TItem, TResult> | ConcurrencyConfig,
     maybeConfig?: ConcurrencyConfig,
-  ): Promise<TResult[]> => {
+  ): Promise<BatchResult<TResult>> => {
     let name: string | undefined;
     let items: ConcurrentExecutionItem<TItem>[];
     let executor: ConcurrentExecutor<TItem, TResult>;
     let config: ConcurrencyConfig | undefined;
 
-    // Parse overloaded parameters
     if (typeof nameOrItems === "string" || nameOrItems === undefined) {
       name = nameOrItems;
       items = itemsOrExecutor as ConcurrentExecutionItem<TItem>[];
@@ -208,7 +264,6 @@ export const createConcurrentExecutionHandler = (
       maxConcurrency: config?.maxConcurrency,
     });
 
-    // Validate inputs
     if (!Array.isArray(items)) {
       throw new Error("Concurrent execution requires an array of items");
     }
@@ -217,7 +272,6 @@ export const createConcurrentExecutionHandler = (
       throw new Error("Concurrent execution requires an executor function");
     }
 
-    // Validate maxConcurrency
     if (
       config?.maxConcurrency !== undefined &&
       config.maxConcurrency !== null &&

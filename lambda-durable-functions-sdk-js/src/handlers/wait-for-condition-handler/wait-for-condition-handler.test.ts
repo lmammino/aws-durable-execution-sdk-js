@@ -1,3 +1,7 @@
+import {
+  createMockCheckpoint,
+  CheckpointFunction,
+} from "../../testing/mock-checkpoint";
 import { createWaitForConditionHandler } from "./wait-for-condition-handler";
 import {
   ExecutionContext,
@@ -10,12 +14,13 @@ import { TerminationReason } from "../../termination-manager/types";
 import { OperationType, OperationStatus } from "@amzn/dex-internal-sdk";
 import { OperationInterceptor } from "../../mocks/operation-interceptor";
 import { hashId, getStepData } from "../../utils/step-id-utils/step-id-utils";
+import { createErrorObjectFromError } from "../../utils/error-object/error-object";
 
 jest.mock("../../mocks/operation-interceptor");
 
 describe("WaitForCondition Handler", () => {
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
-  let mockCheckpoint: jest.Mock;
+  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
   let mockParentContext: any;
   let createStepId: jest.Mock;
   let waitForConditionHandler: ReturnType<typeof createWaitForConditionHandler>;
@@ -50,7 +55,7 @@ describe("WaitForCondition Handler", () => {
       }),
     } as unknown as jest.Mocked<ExecutionContext>;
 
-    mockCheckpoint = jest.fn().mockResolvedValue(undefined);
+    mockCheckpoint = createMockCheckpoint();
     mockParentContext = {};
     createStepId = jest.fn().mockReturnValue("step-1");
 
@@ -508,7 +513,7 @@ describe("WaitForCondition Handler", () => {
         Action: "FAIL",
         SubType: OperationSubType.WAIT_FOR_CONDITION,
         Type: OperationType.STEP,
-        Payload: "Check function failed",
+        Error: createErrorObjectFromError(error),
         Name: undefined,
       });
     });
@@ -536,7 +541,7 @@ describe("WaitForCondition Handler", () => {
         Action: "FAIL",
         SubType: OperationSubType.WAIT_FOR_CONDITION,
         Type: OperationType.STEP,
-        Payload: "Unknown error", // Should use default message for non-Error
+        Error: createErrorObjectFromError("Unknown error"), // Should use default message for non-Error
         Name: undefined,
       });
     });

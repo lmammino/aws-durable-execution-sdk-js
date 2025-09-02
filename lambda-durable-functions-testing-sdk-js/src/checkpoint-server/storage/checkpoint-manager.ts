@@ -297,6 +297,7 @@ export class CheckpointManager {
       Type: update.Type,
       StartTimestamp: new Date(),
       Status: OperationStatus.STARTED,
+      SubType: update.SubType,
     };
 
     switch (update.Type) {

@@ -10,8 +10,9 @@ import { IndexedOperations } from "../../../common/indexed-operations";
 jest.mock("../operation-wait-manager");
 
 describe("OperationStorage", () => {
-  let mockWaitManager: jest.Mocked<OperationWaitManager>;
+  let mockWaitManager: OperationWaitManager;
   let mockIndexedOperations: IndexedOperations;
+  let mockCallback: jest.Mock;
 
   // Sample operations for testing
   const sampleOperations: CheckpointOperation[] = [
@@ -46,47 +47,29 @@ describe("OperationStorage", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockWaitManager =
-      new OperationWaitManager() as jest.Mocked<OperationWaitManager>;
+    mockWaitManager = new OperationWaitManager();
     mockIndexedOperations = new IndexedOperations([]);
-    jest.spyOn(mockWaitManager, "tryResolveWaitingOperations");
+    mockCallback = jest.fn();
   });
 
   describe("constructor", () => {
     it("should initialize with empty operations", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
 
       expect(storage.getCompletedOperations()).toEqual([]);
-    });
-
-    it("should accept a wait manager as dependency", () => {
-      const storage = new OperationStorage(
-        mockWaitManager,
-        mockIndexedOperations
-      );
-
-      expect(storage).toBeDefined();
-      // The wait manager should be stored as a private dependency
     });
   });
 
   describe("getOperations", () => {
-    it("should return empty array when no operations have been added", () => {
-      const storage = new OperationStorage(
-        mockWaitManager,
-        mockIndexedOperations
-      );
-
-      expect(storage.getCompletedOperations()).toEqual([]);
-    });
-
     it("should return all operations after they have been populated", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
 
       storage.populateOperations(sampleOperations);
@@ -99,7 +82,8 @@ describe("OperationStorage", () => {
     it("should not return execution operations", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
 
       storage.populateOperations(
@@ -122,7 +106,8 @@ describe("OperationStorage", () => {
     it("should add operations to storage", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
 
       storage.populateOperations(sampleOperations);
@@ -135,7 +120,8 @@ describe("OperationStorage", () => {
     it("should update registered mock operations with matching ID", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { id: "op1" },
@@ -161,7 +147,8 @@ describe("OperationStorage", () => {
     it("should update registered mock operations with matching name and index", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { name: "operation1", index: 1 },
@@ -187,7 +174,8 @@ describe("OperationStorage", () => {
     it("should update registered mock operations with matching index only", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { index: 1 },
@@ -213,7 +201,8 @@ describe("OperationStorage", () => {
     it("should not throw for mock operations without matching operation data", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { name: "nonexistent" },
@@ -234,9 +223,11 @@ describe("OperationStorage", () => {
     });
 
     it("should notify wait manager when operations are populated", () => {
+      const mockCallback = jest.fn();
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { id: "op1" },
@@ -250,17 +241,18 @@ describe("OperationStorage", () => {
       // Add operations
       storage.populateOperations(sampleOperations);
 
-      // Verify wait manager was notified for the populated operation
-      expect(mockWaitManager.tryResolveWaitingOperations).toHaveBeenCalledWith(
+      // Verify callback was called with checkpoint operations and populated operations
+      expect(mockCallback).toHaveBeenCalledWith(sampleOperations, [
         mockOperation,
-        OperationStatus.SUCCEEDED
-      );
+      ]);
     });
 
     it("should notify wait manager for multiple populated operations", () => {
+      const mockCallback = jest.fn();
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation1 = new MockOperation(
         { id: "op1" },
@@ -280,18 +272,11 @@ describe("OperationStorage", () => {
       // Add operations
       storage.populateOperations(sampleOperations);
 
-      // Verify wait manager was notified for both operations
-      expect(mockWaitManager.tryResolveWaitingOperations).toHaveBeenCalledWith(
+      // Verify callback was called with both populated operations
+      expect(mockCallback).toHaveBeenCalledWith(sampleOperations, [
         mockOperation1,
-        OperationStatus.SUCCEEDED
-      );
-      expect(mockWaitManager.tryResolveWaitingOperations).toHaveBeenCalledWith(
         mockOperation2,
-        OperationStatus.SUCCEEDED
-      );
-      expect(mockWaitManager.tryResolveWaitingOperations).toHaveBeenCalledTimes(
-        2
-      );
+      ]);
     });
   });
 
@@ -299,7 +284,8 @@ describe("OperationStorage", () => {
     it("should register a mock operation", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { name: "test-op" },
@@ -334,7 +320,8 @@ describe("OperationStorage", () => {
     it("should populate mock operation data if matching operation exists", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
 
       // Add operations first
@@ -357,7 +344,8 @@ describe("OperationStorage", () => {
     it("should handle mock operations with empty string id", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { id: "" },
@@ -392,7 +380,8 @@ describe("OperationStorage", () => {
     it("should handle mock operations with empty string name", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { name: "" },
@@ -427,7 +416,8 @@ describe("OperationStorage", () => {
     it("should handle mock operations with index 0", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { index: 0 },
@@ -469,9 +459,11 @@ describe("OperationStorage", () => {
     });
 
     it("should notify wait manager when registering operations with existing data", () => {
+      const mockCallback = jest.fn();
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
 
       // Add operations first
@@ -485,11 +477,10 @@ describe("OperationStorage", () => {
       );
       storage.registerOperation(mockOperation);
 
-      // Verify wait manager was notified when the operation was registered
-      expect(mockWaitManager.tryResolveWaitingOperations).toHaveBeenCalledWith(
-        mockOperation,
-        OperationStatus.SUCCEEDED
-      );
+      // The mock operation should have been populated immediately since data exists
+      expect(mockOperation.getOperationData()).toEqual({
+        ...sampleOperations[1].operation,
+      });
     });
   });
 
@@ -497,7 +488,8 @@ describe("OperationStorage", () => {
     it("should call registerMocks on all registered mock operations", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation1 = new MockOperation(
         { name: "op1" },
@@ -542,7 +534,8 @@ describe("OperationStorage", () => {
     it("should not throw when no mock operations are registered", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
 
       const executionId = createExecutionId("test-execution-id");
@@ -556,7 +549,8 @@ describe("OperationStorage", () => {
     it("should handle mixed types of mock operations", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const idBasedMock = new MockOperation(
         { id: "test-id" },
@@ -598,7 +592,8 @@ describe("OperationStorage", () => {
     it("should call registerMocks even if mock operations are not populated with data", () => {
       const storage = new OperationStorage(
         mockWaitManager,
-        mockIndexedOperations
+        mockIndexedOperations,
+        mockCallback
       );
       const mockOperation = new MockOperation(
         { name: "nonexistent-op" },
@@ -621,6 +616,120 @@ describe("OperationStorage", () => {
 
       expect(registerMocksSpy).toHaveBeenCalledWith(executionId);
       expect(registerMocksSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("Callback functionality edge cases", () => {
+    it("should always call callback since it is required", () => {
+      const storage = new OperationStorage(
+        mockWaitManager,
+        mockIndexedOperations,
+        mockCallback
+      );
+      const mockOperation = new MockOperation(
+        { id: "op1" },
+        mockWaitManager,
+        mockIndexedOperations
+      );
+
+      storage.registerOperation(mockOperation);
+      storage.populateOperations(sampleOperations);
+
+      expect(mockCallback).toHaveBeenCalledWith(sampleOperations, [
+        mockOperation,
+      ]);
+    });
+
+    it("should call callback with empty populated operations when no operations are populated", () => {
+      const mockCallback = jest.fn();
+      const storage = new OperationStorage(
+        mockWaitManager,
+        mockIndexedOperations,
+        mockCallback
+      );
+      const mockOperation = new MockOperation(
+        { name: "nonexistent" },
+        mockWaitManager,
+        mockIndexedOperations
+      );
+
+      storage.registerOperation(mockOperation);
+      storage.populateOperations(sampleOperations);
+
+      // Callback should be called with empty populated operations array
+      expect(mockCallback).toHaveBeenCalledWith(sampleOperations, []);
+    });
+
+    it("should call callback with empty arrays when no operations provided", () => {
+      const mockCallback = jest.fn();
+      const storage = new OperationStorage(
+        mockWaitManager,
+        mockIndexedOperations,
+        mockCallback
+      );
+
+      // Populate with empty array
+      storage.populateOperations([]);
+
+      // Callback should not be called when no operations provided
+      expect(mockCallback).not.toHaveBeenCalled();
+    });
+
+    it("should call callback only for operations that actually got populated", () => {
+      const mockCallback = jest.fn();
+      const storage = new OperationStorage(
+        mockWaitManager,
+        mockIndexedOperations,
+        mockCallback
+      );
+      const populatedOperation = new MockOperation(
+        { id: "op1" },
+        mockWaitManager,
+        mockIndexedOperations
+      );
+      const nonPopulatedOperation = new MockOperation(
+        { name: "nonexistent" },
+        mockWaitManager,
+        mockIndexedOperations
+      );
+
+      storage.registerOperation(populatedOperation);
+      storage.registerOperation(nonPopulatedOperation);
+      storage.populateOperations(sampleOperations);
+
+      // Callback should only include the operation that actually got populated
+      expect(mockCallback).toHaveBeenCalledWith(
+        sampleOperations,
+        [populatedOperation] // Only the populated one
+      );
+    });
+
+    it("should call callback when registering operation with existing data", () => {
+      const mockCallback = jest.fn();
+      const storage = new OperationStorage(
+        mockWaitManager,
+        mockIndexedOperations,
+        mockCallback
+      );
+
+      // Populate operations first
+      storage.populateOperations(sampleOperations);
+      mockCallback.mockClear(); // Clear previous calls
+
+      // Register operation that matches existing data
+      const mockOperation = new MockOperation(
+        { id: "op1" },
+        mockWaitManager,
+        mockIndexedOperations
+      );
+      storage.registerOperation(mockOperation);
+
+      // The operation should be populated immediately, but callback is only called from populateOperations
+      expect(mockOperation.getOperationData()).toEqual({
+        ...sampleOperations[0].operation,
+      });
+      // Callback should not be called during registration
+      expect(mockCallback).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,3 +1,7 @@
+import {
+  createMockCheckpoint,
+  CheckpointFunction,
+} from "../../testing/mock-checkpoint";
 import { createStepHandler } from "./step-handler";
 import { ExecutionContext, StepSemantics, OperationSubType } from "../../types";
 import { TEST_CONSTANTS } from "../../testing/test-constants";
@@ -17,6 +21,7 @@ import {
 } from "@amzn/dex-internal-sdk";
 import { OperationInterceptor } from "../../mocks/operation-interceptor";
 import { hashId, getStepData } from "../../utils/step-id-utils/step-id-utils";
+import { createErrorObjectFromError } from "../../utils/error-object/error-object";
 
 jest.mock("../../utils/retry/retry-presets/retry-presets", () => ({
   retryPresets: {
@@ -26,7 +31,7 @@ jest.mock("../../utils/retry/retry-presets/retry-presets", () => ({
 
 describe("Step Handler", () => {
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
-  let mockCheckpoint: jest.Mock;
+  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
   let mockParentContext: any;
   let createStepId: jest.Mock;
   let stepHandler: ReturnType<typeof createStepHandler>;
@@ -59,7 +64,7 @@ describe("Step Handler", () => {
       }),
     } as unknown as jest.Mocked<ExecutionContext>;
 
-    mockCheckpoint = jest.fn().mockResolvedValue({});
+    mockCheckpoint = createMockCheckpoint();
     mockParentContext = { awsRequestId: "mock-request-id" };
     createStepId = jest.fn().mockReturnValue("test-step-id");
     stepHandler = createStepHandler(
@@ -73,15 +78,16 @@ describe("Step Handler", () => {
     (retryPresets.default as jest.Mock).mockReset();
   });
 
-  test("should execute step function without passing context", async () => {
+  test("should execute step function with Telemetry", async () => {
     const stepFn = jest.fn().mockResolvedValue("step-result");
 
     const result = await stepHandler("test-step", stepFn);
 
     expect(result).toBe("step-result");
     expect(stepFn).toHaveBeenCalledTimes(1);
-    // Verify that no arguments were passed to the step function
-    expect(stepFn.mock.calls[0].length).toBe(0);
+    // Verify that Telemetry was passed to the step function
+    expect(stepFn.mock.calls[0].length).toBe(1);
+    expect(stepFn.mock.calls[0][0]).toHaveProperty("logger");
   });
 
   test("should checkpoint at start and finish with AT_MOST_ONCE_PER_RETRY semantics", async () => {
@@ -103,16 +109,46 @@ describe("Step Handler", () => {
     });
   });
 
-  test("should checkpoint only at finish with AT_LEAST_ONCE_PER_RETRY semantics (default)", async () => {
+  test("should checkpoint at start and finish with AT_LEAST_ONCE_PER_RETRY semantics (default)", async () => {
     const stepFn = jest.fn().mockResolvedValue("step-result");
 
     await stepHandler("test-step", stepFn);
 
-    expect(mockCheckpoint).toHaveBeenCalledTimes(1);
+    expect(mockCheckpoint).toHaveBeenCalledTimes(2);
     expect(mockCheckpoint).toHaveBeenNthCalledWith(1, "test-step-id", {
+      ...TEST_CONSTANTS.DEFAULT_STEP_START_CHECKPOINT,
+    });
+    expect(mockCheckpoint).toHaveBeenNthCalledWith(2, "test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_SUCCEED_CHECKPOINT,
       Payload: JSON.stringify("step-result"),
     });
+  });
+
+  test("should not await START checkpoint for AT_LEAST_ONCE_PER_RETRY semantics", async () => {
+    let checkpointResolve: () => void;
+    const checkpointPromise = new Promise<void>((resolve) => {
+      checkpointResolve = resolve;
+    });
+
+    // Mock checkpoint to return a promise that we control
+    mockCheckpoint.mockImplementation(() => checkpointPromise);
+
+    const stepFn = jest.fn().mockResolvedValue("step-result");
+
+    // Start the step execution (should not hang waiting for START checkpoint)
+    const stepPromise = stepHandler("test-step", stepFn);
+
+    // Give a small delay to ensure the step function would be called if not waiting
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Step function should have been called even though checkpoint promise hasn't resolved
+    expect(stepFn).toHaveBeenCalled();
+
+    // Now resolve the checkpoint promise to complete the test
+    checkpointResolve!();
+    await stepPromise;
+
+    expect(mockCheckpoint).toHaveBeenCalledTimes(2); // START + SUCCEED
   });
 
   test("should handle interrupted step with AT_MOST_ONCE_PER_RETRY semantics", async () => {
@@ -157,8 +193,12 @@ describe("Step Handler", () => {
     // Verify the checkpoint was called with retry status
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_RETRY_CHECKPOINT,
-      Payload:
-        "The step execution process was initiated but failed to reach completion due to an interruption.",
+      Error: expect.objectContaining({
+        ErrorMessage:
+          "The step execution process was initiated but failed to reach completion due to an interruption.",
+        ErrorType: "StepInterruptedError",
+        StackTrace: expect.any(Array),
+      }),
       StepOptions: {
         NextAttemptDelaySeconds: 10,
       },
@@ -211,8 +251,12 @@ describe("Step Handler", () => {
     // Verify the checkpoint was called with failed status
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_FAIL_CHECKPOINT,
-      Payload:
-        "The step execution process was initiated but failed to reach completion due to an interruption.",
+      Error: expect.objectContaining({
+        ErrorMessage:
+          "The step execution process was initiated but failed to reach completion due to an interruption.",
+        ErrorType: "StepInterruptedError",
+        StackTrace: expect.any(Array),
+      }),
     });
   });
 
@@ -306,7 +350,7 @@ describe("Step Handler", () => {
     // Verify the checkpoint was called with retry status
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_RETRY_CHECKPOINT,
-      Payload: "step-error",
+      Error: createErrorObjectFromError(error),
       StepOptions: {
         NextAttemptDelaySeconds: 10,
       },
@@ -340,7 +384,7 @@ describe("Step Handler", () => {
     // Verify the checkpoint was called with retry status
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_RETRY_CHECKPOINT,
-      Payload: "step-error",
+      Error: createErrorObjectFromError(error),
       StepOptions: {
         NextAttemptDelaySeconds: 5,
       },
@@ -371,7 +415,7 @@ describe("Step Handler", () => {
     // Verify the checkpoint was called with failed status
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_FAIL_CHECKPOINT,
-      Payload: "Unknown error",
+      Error: createErrorObjectFromError("Unknown error"),
     });
   });
 
@@ -386,7 +430,7 @@ describe("Step Handler", () => {
 
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_FAIL_CHECKPOINT,
-      Payload: "step-error",
+      Error: createErrorObjectFromError(error),
     });
   });
 
@@ -496,8 +540,12 @@ describe("Step Handler", () => {
     // Verify the checkpoint was called with retry status
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_RETRY_CHECKPOINT,
-      Payload:
-        "The step execution process was initiated but failed to reach completion due to an interruption.",
+      Error: expect.objectContaining({
+        ErrorMessage:
+          "The step execution process was initiated but failed to reach completion due to an interruption.",
+        ErrorType: "StepInterruptedError",
+        StackTrace: expect.any(Array),
+      }),
       StepOptions: {
         NextAttemptDelaySeconds: 5,
       },
@@ -665,7 +713,7 @@ describe("Step Handler", () => {
     // Verify the checkpoint was called with retry status and Unknown error
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_RETRY_CHECKPOINT,
-      Payload: "Unknown error",
+      Error: createErrorObjectFromError("Unknown error"),
       StepOptions: {
         NextAttemptDelaySeconds: 10,
       },
@@ -697,7 +745,7 @@ describe("Step Handler", () => {
     // Verify the checkpoint was called with retry status and Unknown error
     expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
       ...TEST_CONSTANTS.DEFAULT_STEP_RETRY_CHECKPOINT,
-      Payload: "Unknown error",
+      Error: createErrorObjectFromError("Unknown error"),
       StepOptions: {
         NextAttemptDelaySeconds: 5,
       },
@@ -1023,7 +1071,7 @@ describe("Step Handler", () => {
       expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
         ...TEST_CONSTANTS.DEFAULT_STEP_FAIL_CHECKPOINT,
         ParentId: "parent-step-123",
-        Payload: "step-error",
+        Error: createErrorObjectFromError(error),
       });
     });
 
@@ -1047,7 +1095,7 @@ describe("Step Handler", () => {
       expect(mockCheckpoint).toHaveBeenCalledWith("test-step-id", {
         ...TEST_CONSTANTS.DEFAULT_STEP_RETRY_CHECKPOINT,
         ParentId: "parent-step-456",
-        Payload: "step-error",
+        Error: createErrorObjectFromError(error),
         StepOptions: {
           NextAttemptDelaySeconds: 10,
         },

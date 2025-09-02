@@ -2,16 +2,16 @@ import {
   CheckpointDurableExecutionCommand,
   CheckpointDurableExecutionRequest,
   CheckpointDurableExecutionResponse,
-  LambdaClient,
   GetDurableExecutionStateCommand,
   GetDurableExecutionStateResponse,
+  LambdaClient,
 } from "@amzn/dex-internal-sdk";
 import {
   DurableExecutionInvocationInput,
   DurableExecutionInvocationOutput,
 } from "../types";
-import { ExecutionState } from "./storage-provider";
 import { getCredentialsProvider } from "./credentials-provider";
+import { ExecutionState } from "./storage-provider";
 
 /**
  * Implementation of ExecutionState that uses the new @amzn/dex-internal-sdk
@@ -19,12 +19,23 @@ import { getCredentialsProvider } from "./credentials-provider";
 export class ApiStorage implements ExecutionState {
   protected client: LambdaClient;
 
-  constructor(endpoint: string, region: string) {
-    this.client = new LambdaClient({
-      endpoint,
-      region,
-      credentials: getCredentialsProvider(),
-    });
+  constructor(client?: LambdaClient) {
+    if (client) {
+      this.client = client;
+    } else {
+      const endpoint = process.env.DEX_ENDPOINT;
+      const region = process.env.DEX_REGION || "us-east-1";
+
+      if (!endpoint) {
+        throw new Error("DEX_ENDPOINT environment variable must be set");
+      }
+
+      this.client = new LambdaClient({
+        endpoint,
+        region,
+        credentials: getCredentialsProvider(),
+      });
+    }
   }
 
   /**

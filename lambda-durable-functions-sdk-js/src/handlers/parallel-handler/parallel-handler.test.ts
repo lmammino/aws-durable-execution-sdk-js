@@ -1,6 +1,12 @@
 import { createParallelHandler } from "./parallel-handler";
-import { ExecutionContext, DurableContext, ParallelFunc } from "../../types";
+import {
+  ExecutionContext,
+  DurableContext,
+  ParallelFunc,
+  BatchItemStatus,
+} from "../../types";
 import { TEST_CONSTANTS } from "../../testing/test-constants";
+import { MockBatchResult } from "../../testing/mock-batch-result";
 
 describe("Parallel Handler", () => {
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
@@ -13,7 +19,6 @@ describe("Parallel Handler", () => {
     mockExecutionContext = {
       isVerbose: false,
     } as jest.Mocked<ExecutionContext>;
-
     mockExecuteConcurrently = jest.fn();
     parallelHandler = createParallelHandler(
       mockExecutionContext,
@@ -21,82 +26,61 @@ describe("Parallel Handler", () => {
     );
   });
 
+  describe("validation", () => {
+    it("should throw for non-array branches", async () => {
+      await expect(parallelHandler("not-array" as any)).rejects.toThrow(
+        "Parallel operation requires an array of branch functions",
+      );
+    });
+
+    it("should throw for non-function branches", async () => {
+      const branches = [jest.fn(), "not-function" as any];
+      await expect(parallelHandler(branches as any)).rejects.toThrow(
+        "All branches must be functions",
+      );
+    });
+  });
+
   describe("parameter parsing", () => {
-    it("should parse parameters with name", async () => {
-      const branch1: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result1");
-      const branch2: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result2");
-      const branches = [branch1, branch2];
-
-      mockExecuteConcurrently.mockResolvedValue(["result1", "result2"]);
-
-      await parallelHandler("test-parallel", branches);
-
-      expect(mockExecuteConcurrently).toHaveBeenCalledWith(
-        "test-parallel",
-        [
-          { id: "parallel-branch-0", data: branch1, index: 0 },
-          { id: "parallel-branch-1", data: branch2, index: 1 },
-        ],
-        expect.any(Function),
-        TEST_CONSTANTS.DEFAULT_PARALLEL_CONFIG,
-      );
-    });
-
-    it("should parse parameters without name", async () => {
-      const branch1: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result1");
-      const branch2: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result2");
-      const branches = [branch1, branch2];
-
-      mockExecuteConcurrently.mockResolvedValue(["result1", "result2"]);
-
-      await parallelHandler(branches);
-
-      expect(mockExecuteConcurrently).toHaveBeenCalledWith(
-        undefined,
-        [
-          { id: "parallel-branch-0", data: branch1, index: 0 },
-          { id: "parallel-branch-1", data: branch2, index: 1 },
-        ],
-        expect.any(Function),
-        TEST_CONSTANTS.DEFAULT_PARALLEL_CONFIG,
-      );
-    });
-
-    it("should accept undefined as name parameter", async () => {
-      const branch: ParallelFunc<string> = jest.fn();
-      const branches = [branch];
-
-      mockExecuteConcurrently.mockResolvedValue(["result"]);
-
-      await parallelHandler(undefined, branches);
-
-      expect(mockExecuteConcurrently).toHaveBeenCalledWith(
-        undefined,
-        [{ id: "parallel-branch-0", data: branch, index: 0 }],
-        expect.any(Function),
-        TEST_CONSTANTS.DEFAULT_PARALLEL_CONFIG,
-      );
-    });
-
-    it("should parse parameters with config", async () => {
+    it("should handle name and branches", async () => {
       const branch1: ParallelFunc<string> = jest
         .fn()
         .mockResolvedValue("result1");
       const branches = [branch1];
-      const config = {
-        ...TEST_CONSTANTS.DEFAULT_PARALLEL_CONFIG,
-        maxConcurrency: 2,
-      };
 
-      mockExecuteConcurrently.mockResolvedValue(["result1"]);
+      mockExecuteConcurrently.mockResolvedValue(
+        new MockBatchResult([
+          { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        ]) as any,
+      );
+
+      await parallelHandler("test-name", branches);
+
+      expect(mockExecuteConcurrently).toHaveBeenCalledWith(
+        "test-name",
+        [{ id: "parallel-branch-0", data: branch1, index: 0 }],
+        expect.any(Function),
+        {
+          completionConfig: undefined,
+          iterationSubType: "ParallelBranch",
+          maxConcurrency: undefined,
+          topLevelSubType: "Parallel",
+        },
+      );
+    });
+
+    it("should handle branches and config", async () => {
+      const branch1: ParallelFunc<string> = jest
+        .fn()
+        .mockResolvedValue("result1");
+      const branches = [branch1];
+      const config = { maxConcurrency: 2 };
+
+      mockExecuteConcurrently.mockResolvedValue(
+        new MockBatchResult([
+          { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        ]) as any,
+      );
 
       await parallelHandler(branches, config);
 
@@ -104,162 +88,123 @@ describe("Parallel Handler", () => {
         undefined,
         [{ id: "parallel-branch-0", data: branch1, index: 0 }],
         expect.any(Function),
-        config,
-      );
-    });
-  });
-
-  describe("validation", () => {
-    it("should throw error for non-array branches", async () => {
-      await expect(parallelHandler("not-an-array" as any)).rejects.toThrow(
-        "Parallel operation requires an array of branch functions",
+        {
+          completionConfig: undefined,
+          iterationSubType: "ParallelBranch",
+          maxConcurrency: 2,
+          topLevelSubType: "Parallel",
+        },
       );
     });
 
-    it("should throw error for non-function branches", async () => {
-      const branches = [jest.fn(), "not-a-function"];
-
-      await expect(parallelHandler(branches as any)).rejects.toThrow(
-        "All branches must be functions",
-      );
-    });
-  });
-
-  describe("execution", () => {
-    it("should handle empty array", async () => {
-      const branches: ParallelFunc<string>[] = [];
-
-      mockExecuteConcurrently.mockResolvedValue([]);
-
-      const result = await parallelHandler(branches);
-
-      expect(result).toEqual([]);
-      expect(mockExecuteConcurrently).toHaveBeenCalledWith(
-        undefined,
-        [],
-        expect.any(Function),
-        TEST_CONSTANTS.DEFAULT_PARALLEL_CONFIG,
-      );
-    });
-
-    it("should create correct execution items", async () => {
-      const branch1: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result1");
-      const branch2: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result2");
-      const branch3: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result3");
-      const branches = [branch1, branch2, branch3];
-
-      mockExecuteConcurrently.mockResolvedValue([
-        "result1",
-        "result2",
-        "result3",
-      ]);
-
-      await parallelHandler(branches);
-
-      expect(mockExecuteConcurrently).toHaveBeenCalledWith(
-        undefined,
-        [
-          { id: "parallel-branch-0", data: branch1, index: 0 },
-          { id: "parallel-branch-1", data: branch2, index: 1 },
-          { id: "parallel-branch-2", data: branch3, index: 2 },
-        ],
-        expect.any(Function),
-        TEST_CONSTANTS.DEFAULT_PARALLEL_CONFIG,
-      );
-    });
-
-    it("should create executor that calls branch functions correctly", async () => {
-      const branch1: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result1");
-      const branch2: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result2");
-      const branches = [branch1, branch2];
-
-      let capturedExecutor: any;
-      mockExecuteConcurrently.mockImplementation(async (...args: any[]) => {
-        // Unified signature: (name, items, executor, config) where name can be undefined
-        const [, executionItems, executor] = args;
-
-        capturedExecutor = executor;
-        // Simulate calling the executor for each item
-        const results = [];
-        for (const item of executionItems as any[]) {
-          const mockChildContext = {} as DurableContext;
-          const result = await (executor as any)(item, mockChildContext);
-          results.push(result);
-        }
-        return results;
-      });
-
-      const result = await parallelHandler(branches);
-
-      expect(result).toEqual(["result1", "result2"]);
-      expect(branch1).toHaveBeenCalledTimes(1);
-      expect(branch2).toHaveBeenCalledTimes(1);
-      expect(branch1).toHaveBeenCalledWith(expect.any(Object));
-      expect(branch2).toHaveBeenCalledWith(expect.any(Object));
-    });
-
-    it("should pass through maxConcurrency config", async () => {
+    it("should handle name, branches and config", async () => {
       const branch1: ParallelFunc<string> = jest
         .fn()
         .mockResolvedValue("result1");
       const branches = [branch1];
-      const config = {
-        ...TEST_CONSTANTS.DEFAULT_PARALLEL_CONFIG,
-        maxConcurrency: 5,
-      };
+      const config = { maxConcurrency: 3 };
 
-      mockExecuteConcurrently.mockResolvedValue(["result1"]);
+      mockExecuteConcurrently.mockResolvedValue(
+        new MockBatchResult([
+          { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        ]) as any,
+      );
 
-      await parallelHandler("test-parallel", branches, config);
+      await parallelHandler("test-name", branches, config);
 
       expect(mockExecuteConcurrently).toHaveBeenCalledWith(
-        "test-parallel",
-        expect.any(Array),
+        "test-name",
+        [{ id: "parallel-branch-0", data: branch1, index: 0 }],
         expect.any(Function),
-        config,
+        {
+          completionConfig: undefined,
+          iterationSubType: "ParallelBranch",
+          maxConcurrency: 3,
+          topLevelSubType: "Parallel",
+        },
       );
     });
+  });
 
-    it("should handle branch failures", async () => {
-      const branch1: ParallelFunc<string> = jest
-        .fn()
-        .mockResolvedValue("result1");
-      const branch2: ParallelFunc<string> = jest
-        .fn()
-        .mockRejectedValue(new Error("Branch failed"));
-      const branches = [branch1, branch2];
+  it("should execute parallel branches and return BatchResult", async () => {
+    const branch1: ParallelFunc<string> = jest
+      .fn()
+      .mockResolvedValue("result1");
+    const branch2: ParallelFunc<string> = jest
+      .fn()
+      .mockResolvedValue("result2");
+    const branches = [branch1, branch2];
 
-      let capturedExecutor: any;
-      mockExecuteConcurrently.mockImplementation(async (...args: any[]) => {
-        // Unified signature: (name, items, executor, config) where name can be undefined
-        const [, executionItems, executor] = args;
+    mockExecuteConcurrently.mockResolvedValue(
+      new MockBatchResult([
+        { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        { index: 1, result: "result2", status: BatchItemStatus.SUCCEEDED },
+      ]) as any,
+    );
 
-        capturedExecutor = executor;
-        // Simulate calling the executor for each item
-        const results = [];
-        for (const item of executionItems as any[]) {
-          const mockChildContext = {} as DurableContext;
-          try {
-            const result = await (executor as any)(item, mockChildContext);
-            results.push(result);
-          } catch (error) {
-            throw error; // Re-throw to simulate failure
-          }
-        }
-        return results;
-      });
+    const result = await parallelHandler("test-parallel", branches);
 
-      await expect(parallelHandler(branches)).rejects.toThrow("Branch failed");
+    expect(result.all[0]).toEqual({
+      index: 0,
+      result: "result1",
+      status: BatchItemStatus.SUCCEEDED,
     });
+    expect(result.all[1]).toEqual({
+      index: 1,
+      result: "result2",
+      status: BatchItemStatus.SUCCEEDED,
+    });
+    expect(result.successCount).toBe(2);
+  });
+
+  it("should handle empty branches", async () => {
+    const branches: ParallelFunc<any>[] = [];
+
+    mockExecuteConcurrently.mockResolvedValue(new MockBatchResult([]) as any);
+
+    const result = await parallelHandler(branches);
+
+    expect(result.all).toEqual([]);
+    expect(result.successCount).toBe(0);
+  });
+
+  it("should execute executor function with logging", async () => {
+    mockExecutionContext.isVerbose = true;
+    const consoleSpy = jest.spyOn(console, "log").mockImplementation();
+
+    const branch1: ParallelFunc<string> = jest
+      .fn()
+      .mockResolvedValue("result1");
+    const branches = [branch1];
+
+    // Mock the executor being called
+    let capturedExecutor: any;
+    mockExecuteConcurrently.mockImplementation(
+      async (name, items, executor, config) => {
+        capturedExecutor = executor;
+        return new MockBatchResult([
+          { index: 0, result: "result1", status: BatchItemStatus.SUCCEEDED },
+        ]) as any;
+      },
+    );
+
+    await parallelHandler("test-parallel", branches);
+
+    // Call the captured executor to test its logging
+    const mockChildContext = {} as any;
+    const executionItem = { id: "parallel-branch-0", data: branch1, index: 0 };
+    await capturedExecutor(executionItem, mockChildContext);
+
+    // Verify the executor logging was called
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "🔀 Processing parallel branch:",
+      expect.stringContaining('"index": 0'),
+    );
+    expect(consoleSpy).toHaveBeenCalledWith(
+      "✅ Parallel branch completed:",
+      expect.stringContaining('"index": 0'),
+    );
+
+    consoleSpy.mockRestore();
   });
 });

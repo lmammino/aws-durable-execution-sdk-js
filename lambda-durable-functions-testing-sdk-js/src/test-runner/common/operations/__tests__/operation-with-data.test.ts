@@ -4,6 +4,7 @@ import {
   ErrorObject,
   LambdaClient,
 } from "@amzn/dex-internal-sdk";
+import { OperationSubType } from "@amzn/durable-executions-language-sdk";
 
 import * as DurableExecutionsClientModule from "../../../local/api-client/durable-executions-client";
 import { WaitingOperationStatus } from "../../../durable-test-runner";
@@ -85,8 +86,8 @@ describe("OperationWithData", () => {
       expect(contextDetails).toEqual({
         result: { success: true, data: "test-data" },
         error: {
-          ErrorMessage: "Context warning",
-          ErrorType: "ContextWarning",
+          errorMessage: "Context warning",
+          errorType: "ContextWarning",
         },
       });
     });
@@ -141,8 +142,8 @@ describe("OperationWithData", () => {
       expect(contextDetails).toEqual({
         result: undefined,
         error: {
-          ErrorMessage: "Context execution failed",
-          ErrorType: "ContextExecutionError",
+          errorMessage: "Context execution failed",
+          errorType: "ContextExecutionError",
         },
       });
     });
@@ -284,8 +285,8 @@ describe("OperationWithData", () => {
         nextAttemptTimestamp: undefined,
         result: undefined,
         error: {
-          ErrorMessage: "Step execution failed",
-          ErrorType: "StepError",
+          errorMessage: "Step execution failed",
+          errorType: "StepError",
         },
       });
     });
@@ -318,8 +319,8 @@ describe("OperationWithData", () => {
         nextAttemptTimestamp: undefined,
         result: { partial: "data" },
         error: {
-          ErrorMessage: "Partial failure occurred",
-          ErrorType: "PartialFailure",
+          errorMessage: "Partial failure occurred",
+          errorType: "PartialFailure",
         },
       });
     });
@@ -352,8 +353,8 @@ describe("OperationWithData", () => {
         nextAttemptTimestamp: undefined,
         result: "invalid-json{", // Should return the raw string when JSON parsing fails
         error: {
-          ErrorMessage: "JSON parsing failed",
-          ErrorType: "ParseError",
+          errorMessage: "JSON parsing failed",
+          errorType: "ParseError",
         },
       });
     });
@@ -399,7 +400,7 @@ describe("OperationWithData", () => {
       });
 
       expect(() => operation.getCallbackDetails()).toThrow(
-        "Operation type STEP is not CALLBACK"
+        "Operation with Type STEP and SubType undefined is not a valid callback"
       );
     });
 
@@ -448,7 +449,7 @@ describe("OperationWithData", () => {
       expect(callbackDetails).toEqual({
         callbackId: "callback-123",
         result: { data: "test" },
-        error: { ErrorMessage: "Test error" },
+        error: { errorMessage: "Test error" },
       });
     });
 
@@ -456,6 +457,142 @@ describe("OperationWithData", () => {
       const operation = new OperationWithData(waitManager, mockIndexedOperations);
       const callbackDetails = operation.getCallbackDetails();
       expect(callbackDetails).toBeUndefined();
+    });
+
+    it("should return callback details for WAIT_FOR_CALLBACK context operation with child CALLBACK", () => {
+      const mockChildOperations = [
+        { 
+          operation: { 
+            Id: "child-callback", 
+            Name: "child-callback-op",
+            Type: OperationType.CALLBACK,
+            CallbackDetails: {
+              CallbackId: "callback-456",
+              Result: '{"waitResult": "success"}',
+              Error: { ErrorMessage: "Wait callback error" }
+            }
+          },
+          update: {}
+        },
+      ];
+
+      // Mock the getOperationChildren method
+      jest.spyOn(mockIndexedOperations, "getOperationChildren").mockReturnValue(mockChildOperations);
+
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "wait-for-callback-op",
+        Name: "wait-for-callback",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.CONTEXT,
+        SubType: OperationSubType.WAIT_FOR_CALLBACK,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      const callbackDetails = operation.getCallbackDetails();
+      expect(callbackDetails).toEqual({
+        callbackId: "callback-456",
+        result: { waitResult: "success" },
+        error: { errorMessage: "Wait callback error" },
+      });
+    });
+
+    it("should throw error when WAIT_FOR_CALLBACK context has no child CALLBACK operation", () => {
+      const mockChildOperations = [
+        { 
+          operation: { 
+            Id: "child-step", 
+            Name: "child-step-op",
+            Type: OperationType.STEP, // Not CALLBACK
+          },
+          update: {}
+        },
+      ];
+
+      // Mock the getOperationChildren method
+      jest.spyOn(mockIndexedOperations, "getOperationChildren").mockReturnValue(mockChildOperations);
+
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "wait-for-callback-op",
+        Name: "wait-for-callback",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.CONTEXT,
+        SubType: OperationSubType.WAIT_FOR_CALLBACK,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(() => operation.getCallbackDetails()).toThrow(
+        "Could not find CALLBACK operation in WAIT_FOR_CALLBACK context"
+      );
+    });
+
+    it("should throw error when WAIT_FOR_CALLBACK context has empty child operations", () => {
+      // Mock the getOperationChildren method to return empty array
+      jest.spyOn(mockIndexedOperations, "getOperationChildren").mockReturnValue([]);
+
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "wait-for-callback-op",
+        Name: "wait-for-callback",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.CONTEXT,
+        SubType: OperationSubType.WAIT_FOR_CALLBACK,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(() => operation.getCallbackDetails()).toThrow(
+        "Could not find CALLBACK operation in WAIT_FOR_CALLBACK context"
+      );
+    });
+
+    it("should throw error when WAIT_FOR_CALLBACK child CALLBACK operation has undefined CallbackId", () => {
+      const mockChildOperations = [
+        { 
+          operation: { 
+            Id: "child-callback", 
+            Name: "child-callback-op",
+            Type: OperationType.CALLBACK,
+            CallbackDetails: {
+              CallbackId: undefined, // Missing CallbackId
+            }
+          },
+          update: {}
+        },
+      ];
+
+      // Mock the getOperationChildren method
+      jest.spyOn(mockIndexedOperations, "getOperationChildren").mockReturnValue(mockChildOperations);
+
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "wait-for-callback-op",
+        Name: "wait-for-callback",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.CONTEXT,
+        SubType: OperationSubType.WAIT_FOR_CALLBACK,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(() => operation.getCallbackDetails()).toThrow(
+        "Could not find callback ID in callback details"
+      );
     });
   });
 
@@ -641,6 +778,120 @@ describe("OperationWithData", () => {
       const operation = new OperationWithData(waitManager, mockIndexedOperations);
       expect(operation.getEndTimestamp()).toBeUndefined();
     });
+
+    it("should return parent ID when data is populated", () => {
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "test-id",
+        Name: "test-operation",
+        Status: OperationStatus.SUCCEEDED,
+        ParentId: "parent-123",
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(operation.getParentId()).toBe("parent-123");
+    });
+
+    it("should return undefined for parent ID when data is not populated", () => {
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      expect(operation.getParentId()).toBeUndefined();
+    });
+
+    it("should return subtype when data is populated", () => {
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "test-id",
+        Name: "test-operation",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.CONTEXT,
+        SubType: OperationSubType.WAIT_FOR_CALLBACK,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(operation.getSubType()).toBe(OperationSubType.WAIT_FOR_CALLBACK);
+    });
+
+    it("should return undefined for subtype when data is not populated", () => {
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      expect(operation.getSubType()).toBeUndefined();
+    });
+
+    it("should return true for isWaitForCallback when operation is CONTEXT with WAIT_FOR_CALLBACK subtype", () => {
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "test-id",
+        Name: "test-operation",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.CONTEXT,
+        SubType: OperationSubType.WAIT_FOR_CALLBACK,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(operation.isWaitForCallback()).toBe(true);
+    });
+
+    it("should return false for isWaitForCallback when operation is not WAIT_FOR_CALLBACK", () => {
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "test-id",
+        Name: "test-operation",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.STEP,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(operation.isWaitForCallback()).toBe(false);
+    });
+
+    it("should return true for isCallback when operation type is CALLBACK", () => {
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "test-id",
+        Name: "test-operation",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.CALLBACK,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(operation.isCallback()).toBe(true);
+    });
+
+    it("should return false for isCallback when operation type is not CALLBACK", () => {
+      const operation = new OperationWithData(waitManager, mockIndexedOperations);
+      const operationData = {
+        Id: "test-id",
+        Name: "test-operation",
+        Status: OperationStatus.SUCCEEDED,
+        Type: OperationType.STEP,
+      };
+
+      operation.populateData({
+        operation: operationData,
+        update: {},
+      });
+
+      expect(operation.isCallback()).toBe(false);
+    });
   });
 
   describe("callback methods", () => {
@@ -685,7 +936,7 @@ describe("OperationWithData", () => {
         });
 
         expect(() => operation.sendCallbackSuccess("test-result")).toThrow(
-          "Operation type STEP is not CALLBACK"
+          "Operation with Type STEP and SubType undefined is not a valid callback"
         );
       });
 

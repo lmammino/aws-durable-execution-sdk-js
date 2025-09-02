@@ -91,25 +91,8 @@ module.exports = {
         schema: [],
       },
       create: function (context) {
-        // Try to get ignore patterns from ESLint config
+        // Use default ignore patterns (ESLint v9+ doesn't support CLIEngine)
         let ignorePatterns = defaultIgnorePatterns;
-
-        // Access the ESLint config if available
-        if (context.getCwd && context.getFilename) {
-          try {
-            // Get the ESLint CLI engine
-            const { CLIEngine } = require("eslint");
-            const cli = new CLIEngine();
-            const config = cli.getConfigForFile(context.getFilename());
-
-            if (config && config.ignorePatterns) {
-              ignorePatterns = config.ignorePatterns;
-            }
-          } catch (e) {
-            // Fallback to default patterns if there's an error
-            console.log("Using default ignore patterns due to:", e.message);
-          }
-        }
 
         // Function to check if a path should be ignored
         const shouldIgnorePath = (filePath) => {

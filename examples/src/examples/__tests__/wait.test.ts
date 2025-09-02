@@ -15,7 +15,7 @@ describe("wait", () => {
 
     const execution = await durableTestRunner.run();
 
-    expect(execution.getResult()).toBe("");
+    expect(execution.getResult()).toBe("Function Completed");
     expect(waitStep.getWaitDetails()?.waitSeconds).toEqual(10);
   });
 });

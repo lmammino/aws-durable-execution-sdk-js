@@ -1,3 +1,7 @@
+import {
+  createMockCheckpoint,
+  CheckpointFunction,
+} from "../../testing/mock-checkpoint";
 import { createWaitHandler } from "./wait-handler";
 import {
   OperationStatus,
@@ -17,7 +21,7 @@ jest.mock("../../utils/logger/logger", () => ({
 
 describe("Wait Handler", () => {
   let mockExecutionContext: jest.Mocked<ExecutionContext>;
-  let mockCheckpoint: jest.Mock;
+  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
   let createStepId: jest.Mock;
   let waitHandler: ReturnType<typeof createWaitHandler>;
   let mockTerminationManager: jest.Mocked<TerminationManager>;
@@ -43,7 +47,7 @@ describe("Wait Handler", () => {
       }),
     } as unknown as jest.Mocked<ExecutionContext>;
 
-    mockCheckpoint = jest.fn().mockResolvedValue({});
+    mockCheckpoint = createMockCheckpoint();
     createStepId = jest.fn().mockReturnValue("test-step-id");
     waitHandler = createWaitHandler(
       mockExecutionContext,
@@ -60,7 +64,7 @@ describe("Wait Handler", () => {
       Status: OperationStatus.SUCCEEDED,
     } as Operation;
 
-    await waitHandler(1000, "test-wait");
+    await waitHandler("test-wait", 1000);
 
     // Verify checkpoint was not called
     expect(mockCheckpoint).not.toHaveBeenCalled();
@@ -70,7 +74,7 @@ describe("Wait Handler", () => {
 
   test("should accept undefined as name parameter", async () => {
     // Call the wait handler with undefined name
-    waitHandler(500, undefined);
+    waitHandler(500);
 
     // Wait a small amount of time for the async operations to complete
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -97,7 +101,7 @@ describe("Wait Handler", () => {
 
   test("should checkpoint at start and terminate with WAIT_SCHEDULED reason", async () => {
     // Call the wait handler but don't await it (it will never resolve)
-    waitHandler(1000, "test-wait");
+    waitHandler("test-wait", 1000);
 
     // Wait a small amount of time for the async operations to complete
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -158,7 +162,7 @@ describe("Wait Handler", () => {
         .mock(mockCallback);
 
       // Wait handler should throw an error when mocks are detected
-      await expect(waitHandler(1000, "test-wait")).rejects.toThrow(
+      await expect(waitHandler("test-wait", 1000)).rejects.toThrow(
         "Wait step cannot be mocked",
       );
 
@@ -205,11 +209,11 @@ describe("Wait Handler", () => {
         .mock(mockCallback2);
 
       // Both should throw errors
-      await expect(waitHandler(500, "wait-1")).rejects.toThrow(
+      await expect(waitHandler("wait-1", 500)).rejects.toThrow(
         "Wait step cannot be mocked",
       );
 
-      await expect(waitHandler(1000, "wait-2")).rejects.toThrow(
+      await expect(waitHandler("wait-2", 1000)).rejects.toThrow(
         "Wait step cannot be mocked",
       );
 
@@ -235,7 +239,7 @@ describe("Wait Handler", () => {
         Status: OperationStatus.SUCCEEDED,
       } as Operation;
 
-      await waitHandler(1000, "completed-wait");
+      await waitHandler("completed-wait", 1000);
 
       // Should skip execution entirely (no mock check occurs for completed operations)
       expect(mockCheckpoint).not.toHaveBeenCalled();
@@ -249,7 +253,7 @@ describe("Wait Handler", () => {
       mockExecutionContext.parentId = "parent-step-123";
 
       // Call the wait handler but don't await it (it will never resolve)
-      waitHandler(1000, "test-wait-with-parent");
+      waitHandler("test-wait-with-parent", 1000);
 
       // Wait a small amount of time for the async operations to complete
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -271,7 +275,7 @@ describe("Wait Handler", () => {
       mockExecutionContext.parentId = undefined;
 
       // Call the wait handler but don't await it (it will never resolve)
-      waitHandler(5000, "test-wait-without-parent");
+      waitHandler("test-wait-without-parent", 5000);
 
       // Wait a small amount of time for the async operations to complete
       await new Promise((resolve) => setTimeout(resolve, 100));

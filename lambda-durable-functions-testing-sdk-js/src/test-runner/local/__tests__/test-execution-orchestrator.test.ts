@@ -56,7 +56,8 @@ describe("TestExecutionOrchestrator", () => {
     // Mock OperationStorage
     mockOperationStorage = new OperationStorage(
       new OperationWaitManager(),
-      new IndexedOperations([])
+      new IndexedOperations([]),
+      jest.fn()
     ) as jest.Mocked<OperationStorage>;
     mockOperationStorage.populateOperations = jest.fn();
 
@@ -330,7 +331,7 @@ describe("TestExecutionOrchestrator", () => {
         });
       });
 
-      it("should wait for execution checkpoint when the execution update occurs if the invocation success does not include any result", async () => {
+      it("should not wait for execution checkpoint when the execution update occurs if the invocation success does not include any result", async () => {
         const mockOperations = [
           {
             operation: {
@@ -343,7 +344,7 @@ describe("TestExecutionOrchestrator", () => {
               Id: "op1",
               Type: OperationType.EXECUTION,
               Name: "operation1",
-              Payload: "execution-result",
+              Payload: "execution-result", // this will get ignored, since invocation completed without any result
               Action: OperationAction.SUCCEED,
             },
           },
@@ -392,7 +393,6 @@ describe("TestExecutionOrchestrator", () => {
 
         expect(await result).toEqual({
           status: OperationStatus.SUCCEEDED,
-          result: "execution-result",
         });
       });
 
@@ -555,7 +555,6 @@ describe("TestExecutionOrchestrator", () => {
 
       const pendingResult = {
         Status: InvocationStatus.PENDING,
-        Result: JSON.stringify({ inProgress: true }),
       } satisfies DurableExecutionInvocationOutput;
 
       mockInvoke.mockResolvedValue(pendingResult);
@@ -1553,6 +1552,198 @@ describe("TestExecutionOrchestrator", () => {
       expect(checkpointApi.updateCheckpointData).toHaveBeenCalledTimes(1);
       expect(checkpointApi.startInvocation).not.toHaveBeenCalled();
       expect(mockInvoke).toHaveBeenCalledTimes(1); // Only one invoke should have occurred
+    });
+  });
+
+  describe("handleCallbackUpdate", () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it("should return early when operation status is STARTED", async () => {
+      const callbackOperation: Operation = {
+        Id: "callback-started",
+        Name: "callback-operation",
+        Type: OperationType.CALLBACK,
+        Status: OperationStatus.STARTED,
+      };
+
+      const callbackUpdate = {
+        Id: "callback-started",
+        Type: OperationType.CALLBACK,
+        Action: OperationAction.START,
+      };
+
+      const mockOperations = [
+        {
+          operation: callbackOperation,
+          update: callbackUpdate,
+        },
+      ];
+
+      (checkpointApi.pollCheckpointData as jest.Mock)
+        .mockResolvedValueOnce({
+          operations: mockOperations,
+          operationInvocationIdMap: {
+            "callback-started": [
+              createInvocationId("callback-started-invocation"),
+            ],
+          },
+        })
+        .mockResolvedValue({ operations: [], operationInvocationIdMap: {} });
+
+      await orchestrator.executeHandler();
+
+      // Verify no additional API calls were made for callback processing
+      expect(checkpointApi.startInvocation).not.toHaveBeenCalled();
+      // Only the initial invocation should have occurred
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+    });
+
+    it("should return early when there is an active invocation", async () => {
+      const callbackOperation: Operation = {
+        Id: "callback-active-inv",
+        Name: "callback-operation",
+        Type: OperationType.CALLBACK,
+        Status: OperationStatus.SUCCEEDED,
+      };
+
+      const callbackUpdate = {
+        Id: "callback-active-inv",
+        Type: OperationType.CALLBACK,
+        Action: OperationAction.SUCCEED,
+      };
+
+      // Set up a never-resolving invocation to simulate active invocation
+      let resolveInvoke:
+        | ((result: DurableExecutionInvocationOutput) => void)
+        | undefined;
+      mockInvoke.mockImplementation(() => {
+        return new Promise<DurableExecutionInvocationOutput>((resolve) => {
+          resolveInvoke = resolve;
+        });
+      });
+
+      const mockOperations = [
+        {
+          operation: callbackOperation,
+          update: callbackUpdate,
+        },
+      ];
+
+      (checkpointApi.pollCheckpointData as jest.Mock)
+        .mockResolvedValueOnce({
+          operations: mockOperations,
+          operationInvocationIdMap: {
+            "callback-active-inv": [
+              createInvocationId("callback-active-invocation"),
+            ],
+          },
+        })
+        .mockResolvedValue({ operations: [], operationInvocationIdMap: {} });
+
+      const executePromise = orchestrator.executeHandler();
+
+      // Wait for the operation to be processed
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // Verify no additional API calls were made for callback processing
+      expect(checkpointApi.startInvocation).not.toHaveBeenCalled();
+      // Only the initial invocation should have occurred
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+      // Clean up by resolving the initial invocation
+      resolveInvoke!({
+        Status: InvocationStatus.SUCCEEDED,
+        Result: "test-result",
+      });
+
+      await executePromise;
+    });
+
+    it("should process callback successfully when operation status is not STARTED and no active invocation", async () => {
+      const callbackOperation: Operation = {
+        Id: "callback-success",
+        Name: "callback-operation",
+        Type: OperationType.CALLBACK,
+        Status: OperationStatus.SUCCEEDED,
+      };
+
+      const callbackUpdate = {
+        Id: "callback-success",
+        Type: OperationType.CALLBACK,
+        Action: OperationAction.SUCCEED,
+      };
+
+      const mockOperations = [
+        {
+          operation: callbackOperation,
+          update: callbackUpdate,
+        },
+      ];
+
+      // Mock initial invocation to complete quickly
+      mockInvoke
+        .mockResolvedValueOnce({
+          Status: InvocationStatus.PENDING,
+        })
+        .mockResolvedValueOnce({
+          Status: InvocationStatus.SUCCEEDED,
+          Result: "callback-result",
+        });
+
+      // Mock callback invocation data
+      const callbackInvocationId = createInvocationId(
+        "callback-new-invocation"
+      );
+      (checkpointApi.startInvocation as jest.Mock).mockResolvedValue({
+        checkpointToken: createCheckpointToken("callback-token"),
+        executionId: mockExecutionId,
+        operations: [callbackOperation],
+        invocationId: callbackInvocationId,
+      });
+
+      let resolvePolling: (() => void) | undefined;
+      (checkpointApi.pollCheckpointData as jest.Mock).mockImplementation(() => {
+        return new Promise((resolve) => {
+          resolvePolling = () => {
+            resolve({
+              operations: mockOperations,
+              operationInvocationIdMap: {
+                "callback-success": [
+                  createInvocationId("callback-success-invocation"),
+                ],
+              },
+            });
+          };
+        });
+      });
+
+      const executePromise = orchestrator.executeHandler();
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      resolvePolling!();
+
+      const result = await executePromise;
+
+      // Verify startInvocation was called
+      expect(checkpointApi.startInvocation).toHaveBeenCalledWith(
+        mockExecutionId
+      );
+
+      // Verify handler was invoked twice (initial + callback)
+      expect(mockInvoke).toHaveBeenCalledTimes(2);
+
+      // Verify second invocation had correct parameters
+      expect(mockInvoke).toHaveBeenNthCalledWith(2, mockHandlerFunction, {
+        durableExecutionArn: mockExecutionId,
+        checkpointToken: createCheckpointToken("callback-token"),
+        operations: [callbackOperation],
+      });
+
+      // Verify execution completed successfully
+      expect(result.status).toBe(OperationStatus.SUCCEEDED);
     });
   });
 

@@ -19,6 +19,7 @@ import {
   LambdaHandler,
 } from "./types";
 import { log } from "./utils/logger/logger";
+import { createErrorObjectFromError } from "./utils/error-object/error-object";
 
 type DurableHandler<Input, Output> = (
   event: Input,
@@ -110,13 +111,7 @@ async function runHandler<Input, Output>(
 
       return {
         Status: InvocationStatus.PENDING,
-        Result: JSON.stringify({
-          error: {
-            reason: "TERMINATED",
-            message: result.message,
-          },
-        }),
-      } satisfies DurableExecutionInvocationOutput;
+      };
     }
 
     log(
@@ -162,7 +157,7 @@ async function runHandler<Input, Output>(
         return {
           Status: InvocationStatus.SUCCEEDED,
           Result: "",
-        } satisfies DurableExecutionInvocationOutput;
+        };
       } catch (checkpointError) {
         log(
           executionContext.isVerbose,
@@ -200,13 +195,8 @@ async function runHandler<Input, Output>(
 
     return {
       Status: InvocationStatus.FAILED,
-      Result: JSON.stringify({
-        error: error instanceof Error ? error.message : "Unknown error",
-      }),
-    } satisfies DurableExecutionInvocationOutput;
-  } finally {
-    // Clean up checkpoint handler to prevent memory leaks in warm containers
-    deleteCheckpoint();
+      Error: createErrorObjectFromError(error),
+    };
   }
 }
 

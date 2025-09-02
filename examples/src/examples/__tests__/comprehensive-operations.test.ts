@@ -14,19 +14,25 @@ describe("comprehensive-operations", () => {
     const execution = await durableTestRunner.run();
     const result = execution.getResult() as any;
 
-    // Verify the structure of the result
-    expect(result).toEqual({
-      step1: "Step 1 completed successfully",
-      waitCompleted: true,
-      mapResults: [1, 2, 3, 4, 5],
-      parallelResults: ["apple", "banana", "orange"],
-      summary: {
-        totalOperations: 4,
-        stepResult: "Step 1 completed successfully",
-        numbersProcessed: [1, 2, 3, 4, 5],
-        fruitsSelected: ["apple", "banana", "orange"],
-      },
-    });
+    // Verify the structure of the result - now using BatchResult objects
+    expect(result.step1).toBe("Step 1 completed successfully");
+    expect(result.waitCompleted).toBe(true);
+    
+    // mapResults is now a BatchResult object
+    expect(result.mapResults.all).toHaveLength(5);
+    expect(result.mapResults.all.map((item: any) => item.result)).toEqual([1, 2, 3, 4, 5]);
+    expect(result.mapResults.completionReason).toBe("ALL_COMPLETED");
+    
+    // parallelResults is now a BatchResult object
+    expect(result.parallelResults.all).toHaveLength(3);
+    expect(result.parallelResults.all.map((item: any) => item.result)).toEqual(["apple", "banana", "orange"]);
+    expect(result.parallelResults.completionReason).toBe("ALL_COMPLETED");
+    
+    // Summary should use BatchResult objects
+    expect(result.summary.totalOperations).toBe(4);
+    expect(result.summary.stepResult).toBe("Step 1 completed successfully");
+    expect(result.summary.numbersProcessed.all.map((item: any) => item.result)).toEqual([1, 2, 3, 4, 5]);
+    expect(result.summary.fruitsSelected.all.map((item: any) => item.result)).toEqual(["apple", "banana", "orange"]);
   });
 
   it("should execute step1 operation correctly", async () => {
@@ -52,8 +58,9 @@ describe("comprehensive-operations", () => {
     const execution = await durableTestRunner.run();
     const result = execution.getResult() as any;
 
-    // Verify map results
-    expect(result.mapResults).toEqual([1, 2, 3, 4, 5]);
+    // Verify map results - now BatchResult object
+    expect(result.mapResults.all).toHaveLength(5);
+    expect(result.mapResults.all.map((item: any) => item.result)).toEqual([1, 2, 3, 4, 5]);
 
     // Verify individual map step operations exist with correct names
     for (let i = 0; i < 5; i++) {
@@ -67,8 +74,9 @@ describe("comprehensive-operations", () => {
     const execution = await durableTestRunner.run();
     const result = execution.getResult() as any;
 
-    // Verify parallel results
-    expect(result.parallelResults).toEqual(["apple", "banana", "orange"]);
+    // Verify parallel results - now BatchResult object
+    expect(result.parallelResults.all).toHaveLength(3);
+    expect(result.parallelResults.all.map((item: any) => item.result)).toEqual(["apple", "banana", "orange"]);
 
     // Verify individual parallel step operations exist
     const fruitStep1Op = durableTestRunner.getOperation("fruit-step-1");
@@ -88,16 +96,12 @@ describe("comprehensive-operations", () => {
     const execution = await durableTestRunner.run();
     const result = execution.getResult() as any;
 
-    // Verify summary structure
+    // Verify summary structure - now using BatchResult objects
     expect(result.summary).toBeDefined();
     expect(result.summary.totalOperations).toBe(4);
     expect(result.summary.stepResult).toBe("Step 1 completed successfully");
-    expect(result.summary.numbersProcessed).toEqual([1, 2, 3, 4, 5]);
-    expect(result.summary.fruitsSelected).toEqual([
-      "apple",
-      "banana",
-      "orange",
-    ]);
+    expect(result.summary.numbersProcessed.all.map((item: any) => item.result)).toEqual([1, 2, 3, 4, 5]);
+    expect(result.summary.fruitsSelected.all.map((item: any) => item.result)).toEqual(["apple", "banana", "orange"]);
   });
 
   it("should complete execution without errors", async () => {

@@ -23,6 +23,7 @@ import {
 } from "./handlers/callbacks";
 import type { Server } from "http";
 import { CheckpointOperation } from "./storage/checkpoint-manager";
+import { validateCheckpointUpdates } from "./validators/checkpoint-durable-execution-input-validator";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -112,11 +113,11 @@ export async function startCheckpointServer(port: number) {
 
   /**
    * Updates the checkpoint data for a particular execution and operation ID.
-   * 
+   *
    * This endpoint supports two types of updates:
    * - Action-based updates: Complete operations with specific actions (SUCCEED, FAIL, RETRY)
    * - Status-based updates: Update operation status directly (e.g., READY, PENDING)
-   * 
+   *
    * Exactly one of `action` or `status` must be provided in the request body.
    * Used for resolving operations like wait steps, retries, and status transitions.
    */
@@ -224,10 +225,17 @@ export async function startCheckpointServer(port: number) {
       const updates = input.Updates ?? [];
 
       try {
+        validateCheckpointUpdates(updates, storage.operationDataMap);
         storage.registerUpdates(updates, checkpointInfo.data.invocationId);
       } catch (err: unknown) {
         if (err instanceof InvalidParameterValueException) {
+          res.setHeaders(
+            new Headers({
+              "x-amzn-errortype": err.name,
+            })
+          );
           res.status(400).json({
+            Type: err.name,
             message: err.message,
           });
           return;

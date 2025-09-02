@@ -59,16 +59,13 @@ describe("Callback Operations Integration", () => {
     expect(callbackData.getCallbackDetails()?.callbackId).toBeDefined();
 
     // Simulate external system completing the callback
-    await callbackOperation.sendCallbackSuccess({
-      paymentId: "pay_12345",
-      status: "completed",
-    });
+    await callbackOperation.sendCallbackSuccess('payment_completed_pay_12345');
 
     // Now the execution should complete
     const result = await executionPromise;
 
     expect(result.getResult()).toEqual({
-      callbackResult: { paymentId: "pay_12345", status: "completed" },
+      callbackResult: 'payment_completed_pay_12345',
       callbackId: expect.any(String),
       completed: true,
     });
@@ -167,15 +164,12 @@ describe("Callback Operations Integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 600));
 
     // Finally complete the callback
-    await callbackOperation.sendCallbackSuccess({
-      processed: 1000,
-      status: "completed",
-    });
+    await callbackOperation.sendCallbackSuccess('task_completed_1000');
 
     const result = await executionPromise;
 
     expect(result.getResult()).toEqual({
-      longTaskResult: { processed: 1000, status: "completed" },
+      longTaskResult: 'task_completed_1000',
     });
   });
 
@@ -280,17 +274,17 @@ describe("Callback Operations Integration", () => {
     ]);
 
     // Complete callbacks in different order
-    await callback2.sendCallbackSuccess({ id: 2, data: "second" });
-    await callback1.sendCallbackSuccess({ id: 1, data: "first" });
-    await callback3.sendCallbackSuccess({ id: 3, data: "third" });
+    await callback2.sendCallbackSuccess('result_2_second');
+    await callback1.sendCallbackSuccess('result_1_first');
+    await callback3.sendCallbackSuccess('result_3_third');
 
     const result = await executionPromise;
 
     expect(result.getResult()).toEqual({
       results: [
-        { id: 1, data: "first" },
-        { id: 2, data: "second" },
-        { id: 3, data: "third" },
+        'result_1_first',
+        'result_2_second', 
+        'result_3_third',
       ],
       allCompleted: true,
     });
@@ -307,7 +301,7 @@ describe("Callback Operations Integration", () => {
     const handler = withDurableFunctions(
       async (event: unknown, context: DurableContext) => {
         // Mix callback with step and wait operations
-        await context.wait(100, "initial-wait");
+        await context.wait("initial-wait", 100);
 
         const stepResult = await context.step("fetch-data", () => {
           return Promise.resolve({ userId: 123, name: "John Doe" });
@@ -340,16 +334,13 @@ describe("Callback Operations Integration", () => {
     await callbackOperation.waitForData(WaitingOperationStatus.STARTED);
 
     // Complete the callback
-    await callbackOperation.sendCallbackSuccess({
-      processed: true,
-      timestamp: Date.now(),
-    });
+    await callbackOperation.sendCallbackSuccess('processed_true_timestamp');
 
     const result = await executionPromise;
 
     expect(result.getResult()).toEqual({
       stepResult: { userId: 123, name: "John Doe" },
-      callbackResult: { processed: true, timestamp: expect.any(Number) },
+      callbackResult: 'processed_true_timestamp',
       completed: true,
     });
 

@@ -35,7 +35,11 @@ describe("InvocationTracker", () => {
   beforeEach(() => {
     waitManager = new OperationWaitManager();
     indexedOperations = new IndexedOperations([]);
-    operationStorage = new OperationStorage(waitManager, indexedOperations);
+    operationStorage = new OperationStorage(
+      waitManager,
+      indexedOperations,
+      jest.fn()
+    );
     invocationTracker = new InvocationTracker(operationStorage);
   });
 
