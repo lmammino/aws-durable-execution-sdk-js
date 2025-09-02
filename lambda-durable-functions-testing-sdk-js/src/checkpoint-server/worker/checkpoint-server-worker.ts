@@ -138,7 +138,7 @@ export class CheckpointServerWorker {
         void this.shutdownServer();
         break;
       default:
-        this.sendError(new Error(`Unknown command: ${String(command.type)}`));
+        this.sendError(new Error(`Unknown command: ${command.type}`));
     }
   }
 
