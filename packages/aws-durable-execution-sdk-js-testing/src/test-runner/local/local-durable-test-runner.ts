@@ -3,7 +3,11 @@ import {
   InvokeRequest,
   DurableTestRunner,
 } from "../durable-test-runner";
-import { withDurableFunctions } from "@aws/durable-execution-sdk-js";
+import {
+  DurableExecutionInvocationInput,
+  LambdaHandler,
+  withDurableFunctions,
+} from "@aws/durable-execution-sdk-js";
 import { LocalOperationStorage } from "./operations/local-operation-storage";
 import { OperationWaitManager } from "./operations/operation-wait-manager";
 import { MockOperation } from "./operations/mock-operation";
@@ -13,23 +17,30 @@ import { CheckpointApiClient } from "./api-client/checkpoint-api-client";
 import { CheckpointServerWorkerManager } from "./checkpoint-server-worker-manager";
 import { IndexedOperations } from "../common/indexed-operations";
 import { Scheduler } from "./orchestration/scheduler";
+import { FunctionStorage } from "./operations/function-storage";
+import {
+  ILocalDurableTestRunnerExecutor,
+  ILocalDurableTestRunnerFactory,
+  LocalDurableTestRunnerParameters,
+} from "./interfaces/durable-test-runner-factory";
 
 export type LocalTestRunnerHandlerFunction = ReturnType<
   typeof withDurableFunctions
 >;
 
-/**
- * Configuration parameters for LocalDurableTestRunner.
- */
-export interface LocalDurableTestRunnerParameters {
-  /** The handler function to run the execution on */
-  handlerFunction: LocalTestRunnerHandlerFunction;
+export type { LocalDurableTestRunnerParameters };
+
+export class LocalDurableTestRunnerFactory
+  implements ILocalDurableTestRunnerFactory
+{
   /**
-   * Whether to skip wait/retry intervals by using minimal delays.
-   * Will be overridden by calling `skipTime` on individual mocked steps.
-   * @default false
+   * Creates new runner instances for nested function execution
    */
-  skipTime?: boolean;
+  createRunner<T>(
+    params: LocalDurableTestRunnerParameters
+  ): ILocalDurableTestRunnerExecutor<T> {
+    return new LocalDurableTestRunner<T>(params);
+  }
 }
 
 /**
@@ -45,6 +56,7 @@ export class LocalDurableTestRunner<ResultType>
   private operationIndex: IndexedOperations;
   private readonly skipTime: boolean;
   private readonly handlerFunction: LocalDurableTestRunnerParameters["handlerFunction"];
+  private readonly functionStorage: FunctionStorage;
 
   /**
    * Creates a new LocalDurableTestRunner instance and starts the checkpoint server.
@@ -68,6 +80,10 @@ export class LocalDurableTestRunner<ResultType>
 
     this.skipTime = skipTime;
     this.handlerFunction = handlerFunction;
+
+    this.functionStorage = new FunctionStorage(
+      new LocalDurableTestRunnerFactory()
+    );
   }
 
   /**
@@ -93,6 +109,7 @@ export class LocalDurableTestRunner<ResultType>
         this.operationStorage,
         new CheckpointApiClient(serverInfo.url),
         new Scheduler(),
+        this.functionStorage,
         this.skipTime
       );
 
@@ -106,6 +123,45 @@ export class LocalDurableTestRunner<ResultType>
     } finally {
       this.waitManager.clearWaitingOperations();
     }
+  }
+
+  /**
+   * Registers a durable function handler that can be invoked during durable execution testing.
+   *
+   * @param functionName - The name/ARN of the function that will be used in context.invoke() calls
+   * @param durableHandler - The durable function handler created with withDurableFunctions
+   * @returns This LocalDurableTestRunner instance for method chaining
+   *
+   * @example
+   * ```typescript
+   * import { LocalDurableTestRunner } from '@aws/durable-execution-sdk-js-testing';
+   * import { withDurableFunctions } from '@aws/durable-execution-sdk-js';
+   *
+   * const testRunner = new LocalDurableTestRunner({
+   *   handlerFunction: mainHandler
+   * });
+   *
+   * // Register a durable function
+   * const processWorkflow = withDurableFunctions(async (input, context) => {
+   *   const step1 = await context.step('validate', () => validate(input));
+   *   const step2 = await context.step('process', () => process(step1));
+   *   return step2;
+   * });
+   *
+   * testRunner.registerDurableFunction('process-workflow', processWorkflow);
+   *
+   * // Chain multiple registrations
+   * testRunner
+   *   .registerDurableFunction('workflow-a', workflowAHandler)
+   *   .registerDurableFunction('workflow-b', workflowBHandler)
+   * ```
+   */
+  registerDurableFunction(
+    functionName: string,
+    durableHandler: LambdaHandler<DurableExecutionInvocationInput>
+  ): this {
+    this.functionStorage.registerDurableFunction(functionName, durableHandler);
+    return this;
   }
 
   // Inherited methods from DurableTestRunner
