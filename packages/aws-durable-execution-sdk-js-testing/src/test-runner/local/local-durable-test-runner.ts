@@ -122,8 +122,13 @@ export class LocalDurableTestRunner<ResultType>
     try {
       const serverInfo = LocalDurableTestRunner.getCheckpointServerInfo();
 
-      process.env.DURABLE_LOCAL_MODE = "true";
-      process.env.DEX_ENDPOINT = serverInfo.url;
+      process.env.DURABLE_LOCAL_RUNNER_REGION = "us-west-2";
+      process.env.DURABLE_LOCAL_RUNNER_ENDPOINT = serverInfo.url;
+      process.env.DURABLE_LOCAL_RUNNER_CREDENTIALS = JSON.stringify({
+        accessKeyId: "placeholder-accessKeyId",
+        secretAccessKey: "placeholder-secretAccessKey",
+        sessionToken: "placeholder-sessionToken",
+      });
 
       const orchestrator = new TestExecutionOrchestrator(
         this.handlerFunction,
