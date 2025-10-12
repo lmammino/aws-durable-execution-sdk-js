@@ -95,11 +95,8 @@ describe("initializeExecutionContext", () => {
     expect(result).toEqual(
       expect.objectContaining({
         executionContext: expect.objectContaining({
-          executionContextId: expect.any(String),
-          customerHandlerEvent: JSON.parse(mockCustomerHandlerEvent),
           state: mockExecutionState,
           _stepData: {},
-          isVerbose: false,
         }),
         checkpointToken: mockCheckpointToken,
       }),
@@ -115,14 +112,12 @@ describe("initializeExecutionContext", () => {
     const result = await initializeExecutionContext(mockEvent);
 
     // Verify
-    expect(result.executionContext.isVerbose).toBe(true);
     expect(log).toHaveBeenCalledWith(
-      true,
       "🔵",
       "Initializing durable function with event:",
       mockEvent,
     );
-    expect(log).toHaveBeenCalledWith(true, "📍", "Function Input:", mockEvent);
+    expect(log).toHaveBeenCalledWith("📍", "Function Input:", mockEvent);
   });
 
   it("should load step data from event", async () => {
@@ -382,9 +377,6 @@ describe("initializeExecutionContext", () => {
       "test-durable-execution-arn",
       "token1",
     );
-    expect(result.executionContext.customerHandlerEvent).toEqual(
-      JSON.parse(mockCustomerHandlerEvent),
-    );
     expect(result.executionContext._stepData).toEqual({});
   });
 
@@ -474,34 +466,5 @@ describe("initializeExecutionContext", () => {
     // Verify getStepData returns undefined for non-existent step
     const stepData = result.executionContext.getStepData("nonExistentStep");
     expect(stepData).toBeUndefined();
-  });
-
-  it("should throw SyntaxError for malformed JSON in InputPayload", async () => {
-    // Setup - create an event with malformed JSON in InputPayload
-    const mockEventWithMalformedJson: DurableExecutionInvocationInput = {
-      CheckpointToken: mockCheckpointToken,
-      DurableExecutionArn: mockDurableExecutionArn,
-      InitialExecutionState: {
-        Operations: [
-          {
-            Id: "",
-            ParentId: undefined,
-            Name: "",
-            Type: OperationType.EXECUTION,
-            StartTimestamp: new Date(),
-            Status: "STARTED",
-            ExecutionDetails: {
-              InputPayload: '{"invalid": json}', // Missing quotes around json - malformed JSON
-            },
-          },
-        ],
-        NextMarker: "",
-      },
-    };
-
-    // Execute & Verify - should throw SyntaxError when trying to parse malformed JSON
-    await expect(
-      initializeExecutionContext(mockEventWithMalformedJson),
-    ).rejects.toThrow(SyntaxError);
   });
 });

@@ -114,7 +114,6 @@ describe("Callback Handler", () => {
         TEST_CONSTANTS.CALLBACK_ID,
         "test-callback",
         mockTerminationManager,
-        false,
         "test-arn",
       );
 
@@ -154,7 +153,6 @@ describe("Callback Handler", () => {
         TEST_CONSTANTS.CALLBACK_ID,
         undefined,
         mockTerminationManager,
-        false,
         "test-arn",
       );
     });
@@ -296,7 +294,6 @@ describe("Callback Handler", () => {
         TEST_CONSTANTS.CALLBACK_ID,
         "custom-callback",
         mockTerminationManager,
-        false,
         "test-arn",
       );
     });
@@ -896,103 +893,6 @@ describe("Callback Handler", () => {
 
       // Verify it returns a promise
       expect(result).toBeInstanceOf(Promise);
-    });
-  });
-
-  describe("Verbose Logging", () => {
-    test("should pass verbose flag to safeDeserialize", async () => {
-      mockExecutionContext.isVerbose = true;
-
-      const stepId = TEST_CONSTANTS.CALLBACK_ID;
-      const hashedStepId = hashId(stepId);
-      mockExecutionContext._stepData = {
-        [hashedStepId]: {
-          Id: hashedStepId,
-          Status: OperationStatus.SUCCEEDED,
-          CallbackDetails: {
-            CallbackId: "verbose-callback",
-            Result: "verbose-result",
-          },
-        } as Operation,
-      };
-
-      const [promise] = await callbackHandler<string>("verbose-test");
-      await promise;
-
-      expect(mockSafeDeserialize).toHaveBeenCalledWith(
-        expect.objectContaining({
-          serialize: expect.any(Function),
-          deserialize: expect.any(Function),
-        }),
-        "verbose-result",
-        TEST_CONSTANTS.CALLBACK_ID,
-        "verbose-test",
-        mockTerminationManager,
-        true, // isVerbose should be true
-        "test-arn",
-      );
-    });
-  });
-
-  describe("ParentId Handling", () => {
-    test("should include ParentId in checkpoint when creating new callback with defined parentId", async () => {
-      mockExecutionContext.parentId = "parent-step-123";
-
-      mockCheckpoint.mockImplementation(async (stepId, _operation) => {
-        const hashedStepId = hashId(stepId);
-        mockExecutionContext._stepData[hashedStepId] = {
-          Id: hashedStepId,
-          Status: OperationStatus.STARTED,
-          CallbackDetails: {
-            CallbackId: "new-callback-with-parent",
-          },
-        } as Operation;
-      });
-
-      await callbackHandler<string>("test-callback-with-parent");
-
-      expect(mockCheckpoint).toHaveBeenCalledWith(TEST_CONSTANTS.CALLBACK_ID, {
-        Id: TEST_CONSTANTS.CALLBACK_ID,
-        ParentId: "parent-step-123",
-        Action: "START",
-        SubType: OperationSubType.CALLBACK,
-        Type: OperationType.CALLBACK,
-        Name: "test-callback-with-parent",
-        CallbackOptions: {
-          TimeoutSeconds: undefined,
-          HeartbeatTimeoutSeconds: undefined,
-        },
-      });
-    });
-
-    test("should include ParentId as undefined in checkpoint when creating new callback with undefined parentId", async () => {
-      mockExecutionContext.parentId = undefined;
-
-      mockCheckpoint.mockImplementation(async (stepId, _operation) => {
-        const hashedStepId = hashId(stepId);
-        mockExecutionContext._stepData[hashedStepId] = {
-          Id: hashedStepId,
-          Status: OperationStatus.STARTED,
-          CallbackDetails: {
-            CallbackId: "new-callback-without-parent",
-          },
-        } as Operation;
-      });
-
-      await callbackHandler<string>("test-callback-without-parent");
-
-      expect(mockCheckpoint).toHaveBeenCalledWith(TEST_CONSTANTS.CALLBACK_ID, {
-        Id: TEST_CONSTANTS.CALLBACK_ID,
-        ParentId: undefined,
-        Action: "START",
-        SubType: OperationSubType.CALLBACK,
-        Type: OperationType.CALLBACK,
-        Name: "test-callback-without-parent",
-        CallbackOptions: {
-          TimeoutSeconds: undefined,
-          HeartbeatTimeoutSeconds: undefined,
-        },
-      });
     });
   });
 

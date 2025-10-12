@@ -11,7 +11,6 @@ import {
   OperationStatus,
   OperationType,
 } from "@aws-sdk/client-lambda";
-import { randomUUID } from "crypto";
 import { TEST_CONSTANTS } from "../../testing/test-constants";
 import { getStepData } from "../step-id-utils/step-id-utils";
 
@@ -34,14 +33,11 @@ describe("CheckpointHandler - StepData Update", () => {
       },
     };
     mockContext = {
-      executionContextId: randomUUID(),
-      customerHandlerEvent: {},
       state: mockState,
       _stepData: stepData,
       terminationManager: new TerminationManager(),
       durableExecutionArn:
         "arn:aws:durable-execution:us-east-1:123456789012:execution/test-execution",
-      isVerbose: process.env.DURABLE_VERBOSE_MODE === "true",
       getStepData: jest.fn((stepId: string) => {
         return getStepData(stepData, stepId);
       }),

@@ -63,10 +63,12 @@ export const createRunInChildContextHandler = (
     executionContext: ExecutionContext,
     parentContext: Context,
     durableExecutionMode: DurableExecutionMode,
-    entityId: string,
-    checkpointToken: string | undefined,
-    logger: Logger,
+    stepPrefix?: string,
+    checkpointToken?: string,
+    inheritedLogger?: Logger | null,
+    parentId?: string,
   ) => DurableContext,
+  parentId?: string,
 ) => {
   return async <T>(
     nameOrFn: string | undefined | ChildFunc<T>,
@@ -88,7 +90,7 @@ export const createRunInChildContextHandler = (
 
     const entityId = createStepId();
 
-    log(context.isVerbose, "🔄", "Running child context:", {
+    log("🔄", "Running child context:", {
       entityId,
       name,
     });
@@ -117,6 +119,7 @@ export const createRunInChildContextHandler = (
       options,
       getParentLogger,
       createChildContext,
+      parentId,
     );
   };
 };
@@ -136,6 +139,7 @@ export const handleCompletedChildContext = async <T>(
     entityId: string,
     checkpointToken: string | undefined,
     logger: Logger,
+    parentId?: string,
   ) => DurableContext,
 ): Promise<T> => {
   const serdes = options?.serdes || defaultSerdes;
@@ -145,7 +149,6 @@ export const handleCompletedChildContext = async <T>(
   // Check if we need to replay children due to large payload
   if (stepData?.ContextDetails?.ReplayChildren) {
     log(
-      context.isVerbose,
       "🔄",
       "ReplayChildren mode: Re-executing child context due to large payload:",
       { entityId, stepName },
@@ -153,15 +156,13 @@ export const handleCompletedChildContext = async <T>(
 
     // Re-execute the child context to reconstruct the result
     const durableChildContext = createChildContext(
-      {
-        ...context,
-        parentId: entityId,
-      },
+      context,
       parentContext,
       DurableExecutionMode.ReplaySucceededContext,
       entityId,
       undefined,
       getParentLogger(),
+      entityId, // parentId
     );
 
     return await OperationInterceptor.forExecution(
@@ -169,12 +170,9 @@ export const handleCompletedChildContext = async <T>(
     ).execute(stepName, () => fn(durableChildContext));
   }
 
-  log(
-    context.isVerbose,
-    "⏭️",
-    "Child context already finished, returning cached result:",
-    { entityId },
-  );
+  log("⏭️", "Child context already finished, returning cached result:", {
+    entityId,
+  });
 
   return await safeDeserialize(
     serdes,
@@ -182,7 +180,7 @@ export const handleCompletedChildContext = async <T>(
     entityId,
     stepName,
     context.terminationManager,
-    context.isVerbose,
+
     context.durableExecutionArn,
   );
 };
@@ -203,7 +201,9 @@ export const executeChildContext = async <T>(
     entityId: string,
     checkpointToken: string | undefined,
     logger: Logger,
+    parentId?: string,
   ) => DurableContext,
+  parentId?: string,
 ): Promise<T> => {
   const serdes = options?.serdes || defaultSerdes;
 
@@ -212,7 +212,7 @@ export const executeChildContext = async <T>(
     const subType = options?.subType || OperationSubType.RUN_IN_CHILD_CONTEXT;
     checkpoint(entityId, {
       Id: entityId,
-      ParentId: context.parentId,
+      ParentId: parentId,
       Action: OperationAction.START,
       SubType: subType,
       Type: OperationType.CONTEXT,
@@ -222,15 +222,13 @@ export const executeChildContext = async <T>(
 
   // Create a child context with the entity ID as prefix
   const durableChildContext = createChildContext(
-    {
-      ...context,
-      parentId: entityId,
-    },
+    context,
     parentContext,
     determineChildReplayMode(context, entityId),
     entityId,
     undefined,
     getParentLogger(),
+    entityId, // parentId
   );
 
   try {
@@ -247,7 +245,7 @@ export const executeChildContext = async <T>(
       entityId,
       name,
       context.terminationManager,
-      context.isVerbose,
+
       context.durableExecutionArn,
     );
 
@@ -268,23 +266,18 @@ export const executeChildContext = async <T>(
         payloadToCheckpoint = "";
       }
 
-      log(
-        context.isVerbose,
-        "📦",
-        "Large payload detected, using ReplayChildren mode:",
-        {
-          entityId,
-          name,
-          payloadSize: Buffer.byteLength(serializedResult, "utf8"),
-          limit: CHECKPOINT_SIZE_LIMIT,
-        },
-      );
+      log("📦", "Large payload detected, using ReplayChildren mode:", {
+        entityId,
+        name,
+        payloadSize: Buffer.byteLength(serializedResult, "utf8"),
+        limit: CHECKPOINT_SIZE_LIMIT,
+      });
     }
 
     const subType = options?.subType || OperationSubType.RUN_IN_CHILD_CONTEXT;
     await checkpoint(entityId, {
       Id: entityId,
-      ParentId: context.parentId,
+      ParentId: parentId,
       Action: OperationAction.SUCCEED,
       SubType: subType,
       Type: OperationType.CONTEXT,
@@ -293,14 +286,14 @@ export const executeChildContext = async <T>(
       Name: name,
     });
 
-    log(context.isVerbose, "✅", "Child context completed successfully:", {
+    log("✅", "Child context completed successfully:", {
       entityId,
       name,
     });
 
     return result;
   } catch (error) {
-    log(context.isVerbose, "❌", "Child context failed:", {
+    log("❌", "Child context failed:", {
       entityId,
       name,
       error,
@@ -310,7 +303,7 @@ export const executeChildContext = async <T>(
     const subType = options?.subType || OperationSubType.RUN_IN_CHILD_CONTEXT;
     await checkpoint(entityId, {
       Id: entityId,
-      ParentId: context.parentId,
+      ParentId: parentId,
       Action: OperationAction.FAIL,
       SubType: subType,
       Type: OperationType.CONTEXT,

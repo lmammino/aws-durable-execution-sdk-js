@@ -70,6 +70,7 @@ export const createWaitForConditionHandler = (
   addRunningOperation: (stepId: string) => void,
   removeRunningOperation: (stepId: string) => void,
   hasRunningOperations: () => boolean,
+  parentId: string | undefined,
 ) => {
   return async <T>(
     nameOrCheck: string | undefined | WaitForConditionCheckFunc<T>,
@@ -98,7 +99,7 @@ export const createWaitForConditionHandler = (
 
     const stepId = createStepId();
 
-    log(context.isVerbose, "🔄", "Running waitForCondition:", {
+    log("🔄", "Running waitForCondition:", {
       stepId,
       name,
       config,
@@ -148,6 +149,7 @@ export const createWaitForConditionHandler = (
           addRunningOperation,
           removeRunningOperation,
           hasRunningOperations,
+          parentId,
         );
 
         // If executeWaitForCondition signals to continue the main loop, do so
@@ -170,12 +172,9 @@ export const handleCompletedWaitForCondition = async <T>(
   stepName: string | undefined,
   serdes = defaultSerdes,
 ): Promise<T> => {
-  log(
-    context.isVerbose,
-    "⏭️",
-    "waitForCondition already finished, returning cached result:",
-    { stepId },
-  );
+  log("⏭️", "waitForCondition already finished, returning cached result:", {
+    stepId,
+  });
 
   const stepData = context.getStepData(stepId);
   const result = stepData?.StepDetails?.Result;
@@ -186,7 +185,7 @@ export const handleCompletedWaitForCondition = async <T>(
     stepId,
     stepName,
     context.terminationManager,
-    context.isVerbose,
+
     context.durableExecutionArn,
   );
 };
@@ -202,6 +201,7 @@ export const executeWaitForCondition = async <T>(
   addRunningOperation: (stepId: string) => void,
   removeRunningOperation: (stepId: string) => void,
   hasRunningOperations: () => boolean,
+  parentId: string | undefined,
 ): Promise<T | typeof CONTINUE_MAIN_LOOP> => {
   const serdes = config.serdes || defaultSerdes;
 
@@ -225,7 +225,6 @@ export const executeWaitForCondition = async <T>(
         currentState = await serdes.deserialize(checkpointData, serdesContext);
       } catch (error) {
         log(
-          context.isVerbose,
           "⚠️",
           "Failed to deserialize checkpoint data, using initial state:",
           {
@@ -252,7 +251,7 @@ export const executeWaitForCondition = async <T>(
   if (stepData?.Status !== OperationStatus.STARTED) {
     checkpoint(stepId, {
       Id: stepId,
-      ParentId: context.parentId,
+      ParentId: parentId,
       Action: OperationAction.START,
       SubType: OperationSubType.WAIT_FOR_CONDITION,
       Type: OperationType.STEP,
@@ -284,7 +283,7 @@ export const executeWaitForCondition = async <T>(
       stepId,
       name,
       context.terminationManager,
-      context.isVerbose,
+
       context.durableExecutionArn,
     );
 
@@ -295,7 +294,7 @@ export const executeWaitForCondition = async <T>(
       stepId,
       name,
       context.terminationManager,
-      context.isVerbose,
+
       context.durableExecutionArn,
     );
 
@@ -305,7 +304,7 @@ export const executeWaitForCondition = async <T>(
       currentAttempt,
     );
 
-    log(context.isVerbose, "🔍", "waitForCondition check completed:", {
+    log("🔍", "waitForCondition check completed:", {
       stepId,
       name,
       currentAttempt: currentAttempt,
@@ -317,7 +316,7 @@ export const executeWaitForCondition = async <T>(
       // Condition is met - complete successfully
       await checkpoint(stepId, {
         Id: stepId,
-        ParentId: context.parentId,
+        ParentId: parentId,
         Action: OperationAction.SUCCEED,
         SubType: OperationSubType.WAIT_FOR_CONDITION,
         Type: OperationType.STEP,
@@ -325,7 +324,7 @@ export const executeWaitForCondition = async <T>(
         Name: name,
       });
 
-      log(context.isVerbose, "✅", "waitForCondition completed successfully:", {
+      log("✅", "waitForCondition completed successfully:", {
         stepId,
         name,
         result: deserializedState,
@@ -338,7 +337,7 @@ export const executeWaitForCondition = async <T>(
       // Only checkpoint the state, not the attempt number (system handles that)
       await checkpoint(stepId, {
         Id: stepId,
-        ParentId: context.parentId,
+        ParentId: parentId,
         Action: OperationAction.RETRY,
         SubType: OperationSubType.WAIT_FOR_CONDITION,
         Type: OperationType.STEP,
@@ -360,7 +359,7 @@ export const executeWaitForCondition = async <T>(
       return CONTINUE_MAIN_LOOP;
     }
   } catch (error) {
-    log(context.isVerbose, "❌", "waitForCondition check function failed:", {
+    log("❌", "waitForCondition check function failed:", {
       stepId,
       name,
       error,
@@ -371,7 +370,7 @@ export const executeWaitForCondition = async <T>(
     // If the check function throws, it's considered a failure
     await checkpoint(stepId, {
       Id: stepId,
-      ParentId: context.parentId,
+      ParentId: parentId,
       Action: OperationAction.FAIL,
       SubType: OperationSubType.WAIT_FOR_CONDITION,
       Type: OperationType.STEP,

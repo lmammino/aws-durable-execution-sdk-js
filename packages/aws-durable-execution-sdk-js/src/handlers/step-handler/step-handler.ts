@@ -79,6 +79,7 @@ export const createStepHandler = (
   addRunningOperation: (stepId: string) => void,
   removeRunningOperation: (stepId: string) => void,
   hasRunningOperations: () => boolean,
+  parentId?: string,
 ) => {
   return async <T>(
     nameOrFn: string | undefined | StepFunc<T>,
@@ -100,7 +101,7 @@ export const createStepHandler = (
 
     const stepId = createStepId();
 
-    log(context.isVerbose, "▶️", "Running step:", { stepId, name, options });
+    log("▶️", "Running step:", { stepId, name, options });
 
     // Main step logic - can be re-executed if step status changes
     while (true) {
@@ -138,15 +139,10 @@ export const createStepHandler = (
           const semantics =
             options?.semantics || StepSemantics.AtLeastOncePerRetry;
           if (semantics === StepSemantics.AtMostOncePerRetry) {
-            log(
-              context.isVerbose,
-              "⚠️",
-              "Step was interrupted during execution:",
-              {
-                stepId,
-                name,
-              },
-            );
+            log("⚠️", "Step was interrupted during execution:", {
+              stepId,
+              name,
+            });
             const error = new StepInterruptedError(stepId, name);
 
             // Handle the interrupted step as a failure
@@ -159,7 +155,7 @@ export const createStepHandler = (
               retryDecision = retryPresets.default(error, currentAttempt);
             }
 
-            log(context.isVerbose, "⚠️", "Should Retry Interrupted Step:", {
+            log("⚠️", "Should Retry Interrupted Step:", {
               stepId,
               name,
               currentAttempt,
@@ -173,7 +169,7 @@ export const createStepHandler = (
               // No retry, mark as failed
               await checkpoint(stepId, {
                 Id: stepId,
-                ParentId: context.parentId,
+                ParentId: parentId,
                 Action: OperationAction.FAIL,
                 SubType: OperationSubType.STEP,
                 Type: OperationType.STEP,
@@ -186,7 +182,7 @@ export const createStepHandler = (
               // Retry
               await checkpoint(stepId, {
                 Id: stepId,
-                ParentId: context.parentId,
+                ParentId: parentId,
                 Action: OperationAction.RETRY,
                 SubType: OperationSubType.STEP,
                 Type: OperationType.STEP,
@@ -220,6 +216,7 @@ export const createStepHandler = (
           addRunningOperation,
           removeRunningOperation,
           hasRunningOperations,
+          parentId,
           options,
         );
 
@@ -243,12 +240,7 @@ export const handleCompletedStep = async <T>(
   stepName: string | undefined,
   serdes = defaultSerdes,
 ): Promise<T> => {
-  log(
-    context.isVerbose,
-    "⏭️",
-    "Step already finished, returning cached result:",
-    { stepId },
-  );
+  log("⏭️", "Step already finished, returning cached result:", { stepId });
 
   const stepData = context.getStepData(stepId);
   const result = stepData?.StepDetails?.Result;
@@ -259,7 +251,7 @@ export const handleCompletedStep = async <T>(
     stepId,
     stepName,
     context.terminationManager,
-    context.isVerbose,
+
     context.durableExecutionArn,
   );
 };
@@ -274,6 +266,7 @@ export const executeStep = async <T>(
   addRunningOperation: (stepId: string) => void,
   removeRunningOperation: (stepId: string) => void,
   hasRunningOperations: () => boolean,
+  parentId: string | undefined,
   options?: StepConfig<T>,
 ): Promise<T | typeof CONTINUE_MAIN_LOOP> => {
   // Determine step semantics (default to AT_LEAST_ONCE_PER_RETRY if not specified)
@@ -287,7 +280,7 @@ export const executeStep = async <T>(
       // Wait for checkpoint to complete
       await checkpoint(stepId, {
         Id: stepId,
-        ParentId: context.parentId,
+        ParentId: parentId,
         Action: OperationAction.START,
         SubType: OperationSubType.STEP,
         Type: OperationType.STEP,
@@ -297,7 +290,7 @@ export const executeStep = async <T>(
       // Fire and forget for AtLeastOncePerRetry
       checkpoint(stepId, {
         Id: stepId,
-        ParentId: context.parentId,
+        ParentId: parentId,
         Action: OperationAction.START,
         SubType: OperationSubType.STEP,
         Type: OperationType.STEP,
@@ -334,14 +327,14 @@ export const executeStep = async <T>(
       stepId,
       name,
       context.terminationManager,
-      context.isVerbose,
+
       context.durableExecutionArn,
     );
 
     // Always checkpoint on completion
     await checkpoint(stepId, {
       Id: stepId,
-      ParentId: context.parentId,
+      ParentId: parentId,
       Action: OperationAction.SUCCEED,
       SubType: OperationSubType.STEP,
       Type: OperationType.STEP,
@@ -349,7 +342,7 @@ export const executeStep = async <T>(
       Name: name,
     });
 
-    log(context.isVerbose, "✅", "Step completed successfully:", {
+    log("✅", "Step completed successfully:", {
       stepId,
       name,
       result,
@@ -363,11 +356,11 @@ export const executeStep = async <T>(
       stepId,
       name,
       context.terminationManager,
-      context.isVerbose,
+
       context.durableExecutionArn,
     );
   } catch (error) {
-    log(context.isVerbose, "❌", "Step failed:", {
+    log("❌", "Step failed:", {
       stepId,
       name,
       error,
@@ -376,7 +369,7 @@ export const executeStep = async <T>(
 
     // Handle unrecoverable errors - these should not go through retry logic
     if (isUnrecoverableError(error)) {
-      log(context.isVerbose, "💥", "Unrecoverable error detected:", {
+      log("💥", "Unrecoverable error detected:", {
         stepId,
         name,
         error: error.message,
@@ -403,7 +396,7 @@ export const executeStep = async <T>(
       );
     }
 
-    log(context.isVerbose, "⚠️", "Should Retry:", {
+    log("⚠️", "Should Retry:", {
       stepId,
       name,
       currentAttempt,
@@ -418,7 +411,7 @@ export const executeStep = async <T>(
       // No retry
       await checkpoint(stepId, {
         Id: stepId,
-        ParentId: context.parentId,
+        ParentId: parentId,
         Action: OperationAction.FAIL,
         SubType: OperationSubType.STEP,
         Type: OperationType.STEP,
@@ -431,7 +424,7 @@ export const executeStep = async <T>(
       // Retry
       await checkpoint(stepId, {
         Id: stepId,
-        ParentId: context.parentId,
+        ParentId: parentId,
         Action: OperationAction.RETRY,
         SubType: OperationSubType.STEP,
         Type: OperationType.STEP,

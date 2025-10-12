@@ -21,6 +21,7 @@ export const createInvokeHandler = (
   checkpoint: ReturnType<typeof createCheckpoint>,
   createStepId: () => string,
   hasRunningOperations: () => boolean,
+  parentId?: string,
 ): {
   <I, O>(funcId: string, input: I, config?: InvokeConfig<I, O>): Promise<O>;
   <I, O>(
@@ -57,7 +58,7 @@ export const createInvokeHandler = (
 
     const stepId = createStepId();
 
-    log(context.isVerbose, "🔗", `Invoke ${name || funcId} (${stepId})`);
+    log("🔗", `Invoke ${name || funcId} (${stepId})`);
 
     // Main invoke logic - can be re-executed if step status changes
     while (true) {
@@ -73,7 +74,7 @@ export const createInvokeHandler = (
           stepId,
           name,
           context.terminationManager,
-          context.isVerbose,
+
           context.durableExecutionArn,
         );
       }
@@ -95,7 +96,6 @@ export const createInvokeHandler = (
         // Operation is still running, check for other operations before terminating
         if (hasRunningOperations()) {
           log(
-            context.isVerbose,
             "⏳",
             `Invoke ${name || funcId} still in progress, waiting for other operations`,
           );
@@ -111,11 +111,7 @@ export const createInvokeHandler = (
         }
 
         // No other operations running, safe to terminate
-        log(
-          context.isVerbose,
-          "⏳",
-          `Invoke ${name || funcId} still in progress, terminating`,
-        );
+        log("⏳", `Invoke ${name || funcId} still in progress, terminating`);
         return terminate(
           context,
           TerminationReason.OPERATION_TERMINATED,
@@ -134,14 +130,14 @@ export const createInvokeHandler = (
           stepId,
           name,
           context.terminationManager,
-          context.isVerbose,
+
           context.durableExecutionArn,
         );
 
         // Create checkpoint for the invoke operation
         await checkpoint(stepId, {
           Id: stepId,
-          ParentId: context.parentId,
+          ParentId: parentId,
           Action: OperationAction.START,
           SubType: OperationSubType.CHAINED_INVOKE,
           Type: OperationType.CHAINED_INVOKE,
@@ -155,11 +151,7 @@ export const createInvokeHandler = (
           },
         });
 
-        log(
-          context.isVerbose,
-          "🚀",
-          `Invoke ${name || funcId} started, re-checking status`,
-        );
+        log("🚀", `Invoke ${name || funcId} started, re-checking status`);
       });
 
       // Continue the loop to re-evaluate status (will hit STARTED case)

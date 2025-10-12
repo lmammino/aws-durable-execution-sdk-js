@@ -2,7 +2,6 @@ import { createCheckpoint, deleteCheckpoint } from "./checkpoint";
 import { ExecutionContext, OperationSubType } from "../../types";
 import { OperationAction, OperationType } from "@aws-sdk/client-lambda";
 import { TerminationManager } from "../../termination-manager/termination-manager";
-import { randomUUID } from "crypto";
 import { hashId } from "../step-id-utils/step-id-utils";
 import { createMockExecutionContext } from "../../testing/mock-context";
 import { TEST_CONSTANTS } from "../../testing/test-constants";
@@ -32,12 +31,9 @@ describe("Checkpoint Integration Tests", () => {
     };
 
     mockContext = createMockExecutionContext({
-      customerHandlerEvent: {},
-      executionContextId: randomUUID(),
       durableExecutionArn: "test-durable-execution-arn",
       state: mockState,
       terminationManager: mockTerminationManager,
-      isVerbose: false,
     });
   });
 
@@ -215,7 +211,6 @@ describe("Checkpoint Integration Tests", () => {
     // Create second context
     const mockContext2 = {
       ...mockContext,
-      executionContextId: "different-execution-context-id",
     } satisfies ExecutionContext;
 
     const checkpoint1 = createCheckpoint(

@@ -16,8 +16,6 @@ export const createMockExecutionContext = (
   } as unknown as jest.Mocked<TerminationManager>;
 
   const defaultMockContext: jest.Mocked<ExecutionContext> = {
-    executionContextId: "test-execution-id",
-    customerHandlerEvent: "test-event",
     state: {
       getStepData: jest.fn(),
       checkpoint: jest.fn(),
@@ -25,7 +23,6 @@ export const createMockExecutionContext = (
     _stepData: {},
     _durableExecutionMode: DurableExecutionMode.ExecutionMode,
     terminationManager: mockTerminationManager,
-    isVerbose: false,
     durableExecutionArn: "test-arn",
     getStepData: jest.fn((stepId: string) => {
       return getStepDataUtil(defaultMockContext._stepData, stepId);

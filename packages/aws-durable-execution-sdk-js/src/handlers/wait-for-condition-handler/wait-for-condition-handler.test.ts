@@ -43,12 +43,9 @@ describe("WaitForCondition Handler", () => {
       },
       _stepData: stepData,
       terminationManager: mockTerminationManager,
-      isVerbose: false,
       durableExecutionArn:
         "arn:aws:lambda:us-east-1:123456789012:function:test",
       parentId: "parent-123",
-      executionContextId: "exec-123",
-      customerHandlerEvent: {},
       getStepData: jest.fn((stepId: string) => {
         return getStepData(stepData, stepId);
       }),
@@ -83,6 +80,7 @@ describe("WaitForCondition Handler", () => {
       jest.fn(), // addRunningOperation
       jest.fn(), // removeRunningOperation
       jest.fn(() => false), // hasRunningOperations
+      "parent-123", // parentId
     );
   });
 

@@ -154,6 +154,7 @@ export const createCallback = (
   checkpoint: ReturnType<typeof createCheckpoint>,
   createStepId: () => string,
   hasRunningOperations: () => boolean,
+  parentId?: string,
 ) => {
   return async <T>(
     nameOrConfig?: string | undefined | CreateCallbackConfig,
@@ -172,7 +173,7 @@ export const createCallback = (
     const stepId = createStepId();
     const serdes = config?.serdes || passThroughSerdes;
 
-    log(context.isVerbose, "📞", "Creating callback:", {
+    log("📞", "Creating callback:", {
       stepId,
       name,
       config,
@@ -212,6 +213,7 @@ export const createCallback = (
       config,
       serdes,
       hasRunningOperations,
+      parentId,
     );
   };
 };
@@ -222,12 +224,7 @@ const handleCompletedCallback = async <T>(
   stepName: string | undefined,
   serdes: Serdes<T>,
 ): Promise<CreateCallbackResult<T>> => {
-  log(
-    context.isVerbose,
-    "⏭️",
-    "Callback already completed, returning cached result:",
-    { stepId },
-  );
+  log("⏭️", "Callback already completed, returning cached result:", { stepId });
 
   const stepData = context.getStepData(stepId);
   const callbackData = stepData?.CallbackDetails;
@@ -246,7 +243,7 @@ const handleCompletedCallback = async <T>(
     stepId,
     stepName,
     context.terminationManager,
-    context.isVerbose,
+
     context.durableExecutionArn,
   );
 
@@ -261,12 +258,7 @@ const handleFailedCallback = async <T>(
   _stepName: string | undefined,
   _serdes: Serdes<T>,
 ): Promise<CreateCallbackResult<T>> => {
-  log(
-    context.isVerbose,
-    "❌",
-    "Callback already failed, returning rejected promise:",
-    { stepId },
-  );
+  log("❌", "Callback already failed, returning rejected promise:", { stepId });
 
   const stepData = context.getStepData(stepId);
   const callbackData = stepData?.CallbackDetails;
@@ -288,12 +280,9 @@ const handleStartedCallback = async <T>(
   serdes: Serdes<T>,
   hasRunningOperations: () => boolean,
 ): Promise<CreateCallbackResult<T>> => {
-  log(
-    context.isVerbose,
-    "⏳",
-    "Callback already started, returning existing promise:",
-    { stepId },
-  );
+  log("⏳", "Callback already started, returning existing promise:", {
+    stepId,
+  });
 
   const stepData = context.getStepData(stepId);
   const callbackData = stepData?.CallbackDetails;
@@ -322,8 +311,9 @@ const createNewCallback = async <T>(
   config: CreateCallbackConfig | undefined,
   serdes: Serdes<T>,
   hasRunningOperations: () => boolean,
+  parentId?: string,
 ): Promise<CreateCallbackResult<T>> => {
-  log(context.isVerbose, "🆕", "Creating new callback:", {
+  log("🆕", "Creating new callback:", {
     stepId,
     name,
     config,
@@ -332,7 +322,7 @@ const createNewCallback = async <T>(
   // Checkpoint the callback creation - the API will generate and return the callbackId
   await checkpoint(stepId, {
     Id: stepId,
-    ParentId: context.parentId,
+    ParentId: parentId,
     Action: "START",
     SubType: OperationSubType.CALLBACK,
     Type: OperationType.CALLBACK,
@@ -364,7 +354,7 @@ const createNewCallback = async <T>(
     serdes,
   );
 
-  log(context.isVerbose, "✅", "Callback created successfully:", {
+  log("✅", "Callback created successfully:", {
     stepId,
     name,
     callbackId,

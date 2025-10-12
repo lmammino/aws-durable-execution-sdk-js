@@ -17,6 +17,7 @@ export const createWaitHandler = (
   checkpoint: ReturnType<typeof createCheckpoint>,
   createStepId: () => string,
   hasRunningOperations: () => boolean,
+  parentId?: string,
 ): {
   (name: string, seconds: number): Promise<void>;
   (seconds: number): Promise<void>;
@@ -32,7 +33,7 @@ export const createWaitHandler = (
     const actualSeconds = isNameFirst ? seconds! : nameOrSeconds;
     const stepId = createStepId();
 
-    log(context.isVerbose, "⏲️", "Wait requested:", {
+    log("⏲️", "Wait requested:", {
       stepId,
       name: actualName,
       seconds: actualSeconds,
@@ -42,7 +43,7 @@ export const createWaitHandler = (
     while (true) {
       let stepData = context.getStepData(stepId);
       if (stepData?.Status === OperationStatus.SUCCEEDED) {
-        log(context.isVerbose, "⏭️", "Wait already completed:", { stepId });
+        log("⏭️", "Wait already completed:", { stepId });
         return;
       }
 
@@ -57,7 +58,7 @@ export const createWaitHandler = (
       if (!stepData) {
         await checkpoint(stepId, {
           Id: stepId,
-          ParentId: context.parentId,
+          ParentId: parentId,
           Action: OperationAction.START,
           SubType: OperationSubType.WAIT,
           Type: OperationType.WAIT,
