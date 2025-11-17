@@ -20,9 +20,6 @@ import {
   ParallelFunc,
   ParallelConfig,
   NamedParallelBranch,
-  ConcurrentExecutionItem,
-  ConcurrentExecutor,
-  ConcurrencyConfig,
   BatchResult,
 } from "./batch";
 
@@ -742,64 +739,6 @@ export interface DurableContext {
      */
     race<T>(promises: Promise<T>[]): Promise<T>;
   };
-
-  /**
-   * Executes items concurrently with fine-grained control over execution strategy
-   * @param name - Step name for tracking and debugging
-   * @param items - Array of items to execute concurrently
-   * @param executor - Function that processes each item
-   * @param config - Optional configuration for concurrency and completion behavior
-   * @example
-   * ```typescript
-   * const results = await context.executeConcurrently(
-   *   "process-files",
-   *   [
-   *     { id: "file1", path: "/path/to/file1.txt" },
-   *     { id: "file2", path: "/path/to/file2.txt" },
-   *     { id: "file3", path: "/path/to/file3.txt" }
-   *   ],
-   *   async (item, ctx) => {
-   *     return await ctx.step(`process-${item.id}`, async () => {
-   *       return await processFile(item.path);
-   *     });
-   *   },
-   *   {
-   *     maxConcurrency: 3,
-   *     completionConfig: {
-   *       minSuccessful: 2,
-   *       toleratedFailureCount: 1
-   *     }
-   *   }
-   * );
-   * ```
-   */
-  executeConcurrently<TItem, TResult>(
-    name: string | undefined,
-    items: ConcurrentExecutionItem<TItem>[],
-    executor: ConcurrentExecutor<TItem, TResult>,
-    config?: ConcurrencyConfig<TResult>,
-  ): Promise<BatchResult<TResult>>;
-
-  /**
-   * Executes items concurrently with fine-grained control over execution strategy
-   * @param items - Array of items to execute concurrently
-   * @param executor - Function that processes each item
-   * @param config - Optional configuration for concurrency and completion behavior
-   * @example
-   * ```typescript
-   * const results = await context.executeConcurrently(
-   *   [{ data: "item1" }, { data: "item2" }],
-   *   async (item, ctx) => {
-   *     return await processItem(item.data);
-   *   }
-   * );
-   * ```
-   */
-  executeConcurrently<TItem, TResult>(
-    items: ConcurrentExecutionItem<TItem>[],
-    executor: ConcurrentExecutor<TItem, TResult>,
-    config?: ConcurrencyConfig<TResult>,
-  ): Promise<BatchResult<TResult>>;
 
   /**
    * Configures logger behavior for this context

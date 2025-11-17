@@ -47,7 +47,7 @@ import { EventEmitter } from "events";
 import { OPERATIONS_COMPLETE_EVENT } from "../../utils/constants/constants";
 import { validateContextUsage } from "../../utils/context-tracker/context-tracker";
 
-class DurableContextImpl implements DurableContext {
+export class DurableContextImpl implements DurableContext {
   private _stepPrefix?: string;
   private _stepCounter: number = 0;
   private contextLogger: Logger | null;
@@ -446,7 +446,7 @@ class DurableContextImpl implements DurableContext {
     return this.withModeManagement(() => {
       const mapHandler = createMapHandler(
         this.executionContext,
-        this.executeConcurrently.bind(this),
+        this._executeConcurrently.bind(this),
       );
       return mapHandler(
         nameOrItems,
@@ -475,13 +475,13 @@ class DurableContextImpl implements DurableContext {
     return this.withModeManagement(() => {
       const parallelHandler = createParallelHandler(
         this.executionContext,
-        this.executeConcurrently.bind(this),
+        this._executeConcurrently.bind(this),
       );
       return parallelHandler(nameOrBranches, branchesOrConfig, maybeConfig);
     });
   }
 
-  executeConcurrently<TItem, TResult>(
+  _executeConcurrently<TItem, TResult>(
     nameOrItems: string | undefined | ConcurrentExecutionItem<TItem>[],
     itemsOrExecutor?:
       | ConcurrentExecutionItem<TItem>[]
@@ -493,7 +493,7 @@ class DurableContextImpl implements DurableContext {
   ): Promise<BatchResult<TResult>> {
     validateContextUsage(
       this._stepPrefix,
-      "executeConcurrently",
+      "_executeConcurrently",
       this.executionContext.terminationManager,
     );
     return this.withModeManagement(() => {
@@ -527,7 +527,7 @@ export const createDurableContext = (
   checkpointToken?: string,
   inheritedLogger?: Logger | null,
   parentId?: string,
-): DurableContext => {
+): DurableContextImpl => {
   return new DurableContextImpl(
     executionContext,
     parentContext,
