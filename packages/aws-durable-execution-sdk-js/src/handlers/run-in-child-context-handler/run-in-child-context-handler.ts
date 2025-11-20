@@ -27,6 +27,7 @@ import {
   ChildContextError,
 } from "../../errors/durable-error/durable-error";
 import { runWithContext } from "../../utils/context-tracker/context-tracker";
+import { DurablePromise } from "../../types/durable-promise";
 
 // Checkpoint size limit in bytes (256KB)
 const CHECKPOINT_SIZE_LIMIT = 256 * 1024;
@@ -75,11 +76,11 @@ export const createRunInChildContextHandler = (
   ) => DurableContext,
   parentId?: string,
 ) => {
-  return async <T>(
+  return <T>(
     nameOrFn: string | undefined | ChildFunc<T>,
     fnOrOptions?: ChildFunc<T> | ChildConfig<T>,
     maybeOptions?: ChildConfig<T>,
-  ): Promise<T> => {
+  ): DurablePromise<T> => {
     let name: string | undefined;
     let fn: ChildFunc<T>;
     let options: ChildConfig<T> | undefined;
@@ -116,10 +117,35 @@ export const createRunInChildContextHandler = (
       context,
     );
 
-    // Check if this child context has already completed
-    if (stepData?.Status === OperationStatus.SUCCEEDED) {
-      return handleCompletedChildContext<T>(
+    // Two-phase execution: Phase 1 starts immediately, Phase 2 returns result when awaited
+    let phase1Result: T | undefined;
+    let phase1Error: unknown;
+
+    // Phase 1: Start execution immediately and capture result/error
+    const phase1Promise = (async (): Promise<T> => {
+      const currentStepData = context.getStepData(entityId);
+
+      // If already completed, return cached result
+      if (
+        currentStepData?.Status === OperationStatus.SUCCEEDED ||
+        currentStepData?.Status === OperationStatus.FAILED
+      ) {
+        return handleCompletedChildContext(
+          context,
+          parentContext,
+          entityId,
+          name,
+          fn,
+          options,
+          getParentLogger,
+          createChildContext,
+        );
+      }
+
+      // Execute if not completed
+      return executeChildContext(
         context,
+        checkpoint,
         parentContext,
         entityId,
         name,
@@ -127,37 +153,24 @@ export const createRunInChildContextHandler = (
         options,
         getParentLogger,
         createChildContext,
+        parentId,
       );
-    }
+    })()
+      .then((result) => {
+        phase1Result = result;
+      })
+      .catch((error) => {
+        phase1Error = error;
+      });
 
-    if (stepData?.Status === OperationStatus.FAILED) {
-      // Return an async rejected promise to ensure it's handled asynchronously
-      return (async (): Promise<T> => {
-        // Reconstruct the original error and wrap in ChildContextError for consistency
-        if (stepData.ContextDetails?.Error) {
-          const originalError = DurableOperationError.fromErrorObject(
-            stepData.ContextDetails.Error,
-          );
-          throw new ChildContextError(originalError.message, originalError);
-        } else {
-          // Fallback for legacy data without Error field
-          throw new ChildContextError("Child context failed");
-        }
-      })();
-    }
-
-    return executeChildContext(
-      context,
-      checkpoint,
-      parentContext,
-      entityId,
-      name,
-      fn,
-      options,
-      getParentLogger,
-      createChildContext,
-      parentId,
-    );
+    // Phase 2: Return DurablePromise that returns Phase 1 result when awaited
+    return new DurablePromise(async () => {
+      await phase1Promise;
+      if (phase1Error !== undefined) {
+        throw phase1Error;
+      }
+      return phase1Result!;
+    });
   };
 };
 
@@ -182,6 +195,18 @@ export const handleCompletedChildContext = async <T>(
   const serdes = options?.serdes || defaultSerdes;
   const stepData = context.getStepData(entityId);
   const result = stepData?.ContextDetails?.Result;
+
+  // Handle failed child context
+  if (stepData?.Status === OperationStatus.FAILED) {
+    if (stepData.ContextDetails?.Error) {
+      const originalError = DurableOperationError.fromErrorObject(
+        stepData.ContextDetails.Error,
+      );
+      throw new ChildContextError(originalError.message, originalError);
+    } else {
+      throw new ChildContextError("Child context failed");
+    }
+  }
 
   // Check if we need to replay children due to large payload
   if (stepData?.ContextDetails?.ReplayChildren) {
@@ -217,7 +242,6 @@ export const handleCompletedChildContext = async <T>(
     entityId,
     stepName,
     context.terminationManager,
-
     context.durableExecutionArn,
   );
 };
@@ -274,7 +298,6 @@ export const executeChildContext = async <T>(
       fn(durableChildContext),
     );
 
-    // Always checkpoint at finish with adaptive mode
     // Serialize the result for consistency
     const serializedResult = await safeSerialize(
       serdes,
@@ -282,7 +305,6 @@ export const executeChildContext = async <T>(
       entityId,
       name,
       context.terminationManager,
-
       context.durableExecutionArn,
     );
 

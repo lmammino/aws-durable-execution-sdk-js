@@ -4,6 +4,7 @@ import {
 } from "@aws/durable-execution-sdk-js";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { ExampleConfig } from "../../../types";
+import { log } from "../../../utils/logger";
 
 export const config: ExampleConfig = {
   name: "Steps With Retry",
@@ -16,11 +17,6 @@ const ddbClient = new DynamoDBClient();
 const STEP_CONFIG_WITH_RETRY_FAILURES_AFTER_1_SECOND_5_TIMES = {
   retryStrategy: (error: Error, attemptsMade: number) => {
     const shouldRetry = attemptsMade <= 5;
-    console.warn(
-      `Step Attempt #${attemptsMade}.`,
-      error,
-      `. Retry? ${shouldRetry}. `,
-    );
     if (shouldRetry) {
       return { shouldRetry: true, delay: { seconds: 1 } };
     } else {
@@ -42,7 +38,7 @@ export const handler = withDurableExecution(
         pollCount += 1;
         // Lookup the item in DDB
         const getResponse = await context.step(async () => {
-          console.log(`Poll #${pollCount}`);
+          log(`Poll #${pollCount}`);
           // Fail 50% of the time
           if (Math.random() < 0.5) {
             throw new Error("Random failure");
@@ -79,7 +75,7 @@ export const handler = withDurableExecution(
     }
 
     // We found the item!
-    console.log(`Success - Item was found: `, item);
+    log(`Success - Item was found: `, item);
     return item;
   },
 );
