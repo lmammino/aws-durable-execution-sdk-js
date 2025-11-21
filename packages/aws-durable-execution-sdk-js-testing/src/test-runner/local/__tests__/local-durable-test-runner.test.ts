@@ -8,6 +8,7 @@ import { InvocationStatus } from "@aws/durable-execution-sdk-js";
 import { CheckpointServerWorkerManager } from "../checkpoint-server-worker-manager";
 import { CheckpointApiClient } from "../api-client/checkpoint-api-client";
 import { FunctionStorage } from "../operations/function-storage";
+import { IndexedOperations } from "../../common/indexed-operations";
 import { install } from "@sinonjs/fake-timers";
 
 jest.mock("../test-execution-orchestrator");
@@ -122,7 +123,9 @@ describe("LocalDurableTestRunner", () => {
       });
 
       expect(runner).toBeDefined();
-      expect(OperationWaitManager).toHaveBeenCalledWith();
+      expect(OperationWaitManager).toHaveBeenCalledWith(
+        expect.any(IndexedOperations),
+      );
       expect(LocalOperationStorage).toHaveBeenCalledWith(
         mockWaitManager,
         expect.any(Object),
