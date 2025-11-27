@@ -40,6 +40,8 @@ export class CheckpointManager implements Checkpoint {
     resolve: () => void;
     reject: (error: Error) => void;
   }> = [];
+  private queueCompletionResolver: (() => void) | null = null;
+  private queueCompletionTimeout: NodeJS.Timeout | null = null;
   private readonly MAX_PAYLOAD_SIZE = 750 * 1024; // 750KB in bytes
   private isTerminating = false;
   private static textEncoder = new TextEncoder();
@@ -96,6 +98,33 @@ export class CheckpointManager implements Checkpoint {
         });
       }
     });
+  }
+
+  async waitForQueueCompletion(): Promise<void> {
+    if (this.queue.length === 0 && !this.isProcessing) {
+      return;
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      this.queueCompletionResolver = resolve;
+
+      // Set a timeout to prevent infinite waiting
+      this.queueCompletionTimeout = setTimeout(() => {
+        this.queueCompletionResolver = null;
+        this.queueCompletionTimeout = null;
+        // Clear the queue since it's taking too long
+        this.clearQueue();
+        reject(new Error("Timeout waiting for checkpoint queue completion"));
+      }, 3000); // 3 second timeout
+    });
+  }
+
+  public clearQueue(): void {
+    // Silently clear queue - we're terminating so no need to reject promises
+    this.queue = [];
+    this.forceCheckpointPromises = [];
+    // Resolve any waiting queue completion promises since we're clearing
+    this.notifyQueueCompletion();
   }
 
   // Alias for backward compatibility with Checkpoint interface
@@ -321,6 +350,9 @@ export class CheckpointManager implements Checkpoint {
 
       const checkpointError = this.classifyCheckpointError(error);
 
+      // Clear remaining queue silently - we're terminating
+      this.clearQueue();
+
       this.terminationManager.terminate({
         reason: TerminationReason.CHECKPOINT_FAILED,
         message: checkpointError.message,
@@ -333,7 +365,21 @@ export class CheckpointManager implements Checkpoint {
         setImmediate(() => {
           this.processQueue();
         });
+      } else {
+        // Queue is empty and processing is done - notify all waiting promises
+        this.notifyQueueCompletion();
       }
+    }
+  }
+
+  private notifyQueueCompletion(): void {
+    if (this.queueCompletionResolver) {
+      if (this.queueCompletionTimeout) {
+        clearTimeout(this.queueCompletionTimeout);
+        this.queueCompletionTimeout = null;
+      }
+      this.queueCompletionResolver();
+      this.queueCompletionResolver = null;
     }
   }
 
@@ -368,10 +414,7 @@ export class CheckpointManager implements Checkpoint {
       })),
     });
 
-    const response = await this.storage.checkpoint(
-      checkpointData,
-      this.logger,
-    );
+    const response = await this.storage.checkpoint(checkpointData, this.logger);
 
     if (response.CheckpointToken) {
       this.currentTaskToken = response.CheckpointToken;
