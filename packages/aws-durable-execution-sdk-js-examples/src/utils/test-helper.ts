@@ -1,9 +1,10 @@
+import { LambdaClient } from "@aws-sdk/client-lambda";
+import { DurableLambdaHandler } from "@aws/durable-execution-sdk-js";
 import {
   LocalDurableTestRunner,
   CloudDurableTestRunner,
   DurableTestRunner,
   DurableOperation,
-  LocalTestRunnerHandlerFunction,
   InvocationType,
 } from "@aws/durable-execution-sdk-js-testing";
 
@@ -16,7 +17,7 @@ type TestCallback<ResultType> = (
 export interface TestDefinition<ResultType> {
   name: string;
   functionName: string;
-  handler: LocalTestRunnerHandlerFunction;
+  handler: DurableLambdaHandler;
   tests: TestCallback<ResultType>;
   invocationType?: InvocationType;
   localRunnerConfig?: {
@@ -66,9 +67,9 @@ export function createTests<ResultType>(testDef: TestDefinition<ResultType>) {
 
     const runner = new CloudDurableTestRunner<ResultType>({
       functionName,
-      clientConfig: {
+      client: new LambdaClient({
         endpoint: process.env.LAMBDA_ENDPOINT,
-      },
+      }),
       config: {
         invocationType: testDef.invocationType,
       },

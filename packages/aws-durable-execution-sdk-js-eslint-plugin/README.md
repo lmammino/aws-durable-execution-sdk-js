@@ -1,6 +1,6 @@
-# @aws/durable-execution-sdk-js-eslint-plugin
+# AWS Durable Execution ESLint Plugin
 
-ESLint plugin for AWS Lambda durable functions best practices.
+ESLint plugin for AWS Durable Execution SDK best practices.
 
 ## Installation
 
