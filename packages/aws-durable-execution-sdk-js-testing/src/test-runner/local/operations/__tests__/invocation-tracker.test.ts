@@ -7,16 +7,17 @@ import { CheckpointApiClient } from "../../api-client/checkpoint-api-client";
 
 describe("InvocationTracker", () => {
   let invocationTracker: InvocationTracker;
-  let mockCheckpointApi: CheckpointApiClient;
+  let mockCheckpointApi: jest.Mocked<CheckpointApiClient>;
 
   const mockExecutionId = createExecutionId();
 
   beforeEach(() => {
-    mockCheckpointApi = new CheckpointApiClient("mockUrl");
-    invocationTracker = new InvocationTracker(mockCheckpointApi);
-    jest
-      .spyOn(mockCheckpointApi, "completeInvocation")
-      .mockImplementation((_executionId, invocationId, error) =>
+    mockCheckpointApi = {
+      startDurableExecution: jest.fn(),
+      pollCheckpointData: jest.fn(),
+      updateCheckpointData: jest.fn(),
+      startInvocation: jest.fn(),
+      completeInvocation: jest.fn((_executionId, invocationId, error) =>
         Promise.resolve({
           InvocationCompletedDetails: {
             StartTimestamp: new Date(),
@@ -27,7 +28,9 @@ describe("InvocationTracker", () => {
             RequestId: invocationId,
           },
         }),
-      );
+      ),
+    };
+    invocationTracker = new InvocationTracker(mockCheckpointApi);
   });
 
   describe("constructor", () => {

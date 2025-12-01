@@ -5,17 +5,16 @@ import { ResultFormatter } from "../result-formatter";
 import { LocalOperationStorage } from "../operations/local-operation-storage";
 import { OperationWaitManager } from "../operations/operation-wait-manager";
 import { InvocationStatus } from "@aws/durable-execution-sdk-js";
-import { CheckpointServerWorkerManager } from "../checkpoint-server-worker-manager";
-import { CheckpointApiClient } from "../api-client/checkpoint-api-client";
+import { CheckpointWorkerManager } from "../worker/checkpoint-worker-manager";
 import { FunctionStorage } from "../operations/function-storage";
 import { IndexedOperations } from "../../common/indexed-operations";
+import { CheckpointWorkerApiClient } from "../api-client/checkpoint-worker-api-client";
 import { install } from "@sinonjs/fake-timers";
 
 jest.mock("../test-execution-orchestrator");
 jest.mock("../result-formatter");
 jest.mock("../operations/local-operation-storage");
 jest.mock("../operations/operation-wait-manager");
-jest.mock("../checkpoint-server-worker-manager");
 jest.mock("../operations/function-storage");
 jest.mock("@sinonjs/fake-timers");
 
@@ -25,7 +24,7 @@ describe("LocalDurableTestRunner", () => {
   let mockResultFormatter: jest.Mocked<ResultFormatter<{ success: boolean }>>;
   let mockOperationStorage: Partial<jest.Mocked<LocalOperationStorage>>;
   let mockWaitManager: Partial<jest.Mocked<OperationWaitManager>>;
-  let mockCheckpointServerWorkerManager: jest.Mocked<CheckpointServerWorkerManager>;
+  let mockCheckpointServerWorkerManager: jest.Mocked<CheckpointWorkerManager>;
   let mockFunctionStorage: jest.Mocked<FunctionStorage>;
 
   beforeEach(() => {
@@ -43,11 +42,11 @@ describe("LocalDurableTestRunner", () => {
         port: 1234,
       }),
       teardown: jest.fn().mockResolvedValue(undefined),
-    } as unknown as jest.Mocked<CheckpointServerWorkerManager>;
+    } as unknown as jest.Mocked<CheckpointWorkerManager>;
 
     // Mock the getInstance method
     jest
-      .spyOn(CheckpointServerWorkerManager, "getInstance")
+      .spyOn(CheckpointWorkerManager, "getInstance")
       .mockReturnValue(mockCheckpointServerWorkerManager);
 
     // Create mock instances for dependency injection testing - now type-safe!
@@ -133,7 +132,6 @@ describe("LocalDurableTestRunner", () => {
         expect.any(Function),
       );
       expect(ResultFormatter).toHaveBeenCalled();
-      expect(CheckpointServerWorkerManager.getInstance).not.toHaveBeenCalled();
     });
   });
 
@@ -158,31 +156,6 @@ describe("LocalDurableTestRunner", () => {
       expect(result.getResult()).toEqual({ data: { success: true } });
     });
 
-    it("should handle execution without parameters", async () => {
-      const runner = new LocalDurableTestRunner<{ success: boolean }>({
-        handlerFunction: mockHandlerFunction,
-      });
-
-      expect(process.env.DURABLE_LOCAL_RUNNER_REGION).toBeUndefined();
-      expect(process.env.DURABLE_LOCAL_RUNNER_ENDPOINT).toBeUndefined();
-      expect(process.env.DURABLE_LOCAL_RUNNER_CREDENTIALS).toBeUndefined();
-
-      await runner.run();
-
-      expect(process.env.DURABLE_LOCAL_RUNNER_REGION).toBe("us-west-2");
-      expect(process.env.DURABLE_LOCAL_RUNNER_ENDPOINT).toBe(
-        "http://127.0.0.1:1234",
-      );
-      expect(JSON.parse(process.env.DURABLE_LOCAL_RUNNER_CREDENTIALS!)).toEqual(
-        {
-          accessKeyId: "placeholder-accessKeyId",
-          secretAccessKey: "placeholder-secretAccessKey",
-          sessionToken: "placeholder-sessionToken",
-        },
-      );
-      expect(mockOrchestrator.executeHandler).toHaveBeenCalledWith(undefined);
-    });
-
     it("should propagate execution errors", async () => {
       const runner = new LocalDurableTestRunner<{ success: boolean }>({
         handlerFunction: mockHandlerFunction,
@@ -203,10 +176,7 @@ describe("LocalDurableTestRunner", () => {
 
       await runner.run();
 
-      expect(CheckpointServerWorkerManager.getInstance).toHaveBeenCalled();
-      expect(
-        mockCheckpointServerWorkerManager.getServerInfo,
-      ).toHaveBeenCalled();
+      expect(CheckpointWorkerManager.getInstance).toHaveBeenCalled();
     });
 
     it("should create TestExecutionOrchestrator with correct dependencies during run", async () => {
@@ -222,7 +192,7 @@ describe("LocalDurableTestRunner", () => {
       expect(TestExecutionOrchestrator).toHaveBeenCalledWith(
         mockHandlerFunction,
         mockOperationStorage,
-        expect.any(CheckpointApiClient), // CheckpointApiClient created with server URL
+        expect.any(CheckpointWorkerApiClient),
         mockFunctionStorage,
         {
           enabled: false,
@@ -244,7 +214,7 @@ describe("LocalDurableTestRunner", () => {
       expect(TestExecutionOrchestrator).toHaveBeenCalledWith(
         mockHandlerFunction,
         mockOperationStorage,
-        expect.any(CheckpointApiClient), // CheckpointApiClient created with server URL
+        expect.any(CheckpointWorkerApiClient), // CheckpointWorkerApiClient created with server URL
         mockFunctionStorage,
         {
           enabled: true,
@@ -435,22 +405,6 @@ describe("LocalDurableTestRunner", () => {
         ).fakeClock = undefined;
       });
 
-      it("should delegate to CheckpointServerWorkerManager.getInstance().setup()", async () => {
-        const expectedResult = {
-          url: "http://127.0.0.1:9999",
-          port: 9999,
-        };
-        mockCheckpointServerWorkerManager.setup.mockResolvedValue(
-          expectedResult,
-        );
-
-        const result = await LocalDurableTestRunner.setupTestEnvironment();
-
-        expect(CheckpointServerWorkerManager.getInstance).toHaveBeenCalled();
-        expect(mockCheckpointServerWorkerManager.setup).toHaveBeenCalled();
-        expect(result).toEqual(expectedResult);
-      });
-
       it("should set skipTime to false by default", async () => {
         await LocalDurableTestRunner.setupTestEnvironment();
 
@@ -525,7 +479,7 @@ describe("LocalDurableTestRunner", () => {
           LocalDurableTestRunner.setupTestEnvironment(),
         ).rejects.toThrow("Failed to start checkpoint server");
 
-        expect(CheckpointServerWorkerManager.getInstance).toHaveBeenCalled();
+        expect(CheckpointWorkerManager.getInstance).toHaveBeenCalled();
         expect(mockCheckpointServerWorkerManager.setup).toHaveBeenCalled();
       });
     });
@@ -552,7 +506,7 @@ describe("LocalDurableTestRunner", () => {
 
         await LocalDurableTestRunner.teardownTestEnvironment();
 
-        expect(CheckpointServerWorkerManager.getInstance).toHaveBeenCalled();
+        expect(CheckpointWorkerManager.getInstance).toHaveBeenCalled();
         expect(mockCheckpointServerWorkerManager.teardown).toHaveBeenCalled();
       });
 
@@ -605,7 +559,7 @@ describe("LocalDurableTestRunner", () => {
           LocalDurableTestRunner.teardownTestEnvironment(),
         ).rejects.toThrow("Failed to shutdown checkpoint server");
 
-        expect(CheckpointServerWorkerManager.getInstance).toHaveBeenCalled();
+        expect(CheckpointWorkerManager.getInstance).toHaveBeenCalled();
         expect(mockCheckpointServerWorkerManager.teardown).toHaveBeenCalled();
       });
     });
@@ -629,13 +583,11 @@ describe("LocalDurableTestRunner", () => {
       });
 
       it("should allow setup and teardown to be called in sequence", async () => {
-        const setupResult = { url: "http://127.0.0.1:8888", port: 8888 };
-        mockCheckpointServerWorkerManager.setup.mockResolvedValue(setupResult);
+        mockCheckpointServerWorkerManager.setup.mockResolvedValue();
         mockCheckpointServerWorkerManager.teardown.mockResolvedValue(undefined);
 
         // Setup
-        const result = await LocalDurableTestRunner.setupTestEnvironment();
-        expect(result).toEqual(setupResult);
+        await LocalDurableTestRunner.setupTestEnvironment();
 
         // Teardown
         await LocalDurableTestRunner.teardownTestEnvironment();
@@ -678,7 +630,7 @@ describe("LocalDurableTestRunner", () => {
         expect(TestExecutionOrchestrator).toHaveBeenCalledWith(
           mockHandlerFunction,
           mockOperationStorage,
-          expect.any(CheckpointApiClient),
+          expect.any(CheckpointWorkerApiClient),
           mockFunctionStorage,
           {
             enabled: true,

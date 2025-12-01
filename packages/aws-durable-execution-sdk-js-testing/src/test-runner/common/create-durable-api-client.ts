@@ -1,26 +1,26 @@
 import {
   LambdaClient,
   SendDurableExecutionCallbackFailureCommand,
-  SendDurableExecutionCallbackFailureCommandOutput,
   SendDurableExecutionCallbackHeartbeatCommand,
-  SendDurableExecutionCallbackHeartbeatCommandOutput,
   SendDurableExecutionCallbackSuccessCommand,
-  SendDurableExecutionCallbackSuccessCommandOutput,
-  SendDurableExecutionCallbackSuccessCommandInput,
-  SendDurableExecutionCallbackFailureCommandInput,
-  SendDurableExecutionCallbackHeartbeatCommandInput,
+  SendDurableExecutionCallbackSuccessResponse,
+  SendDurableExecutionCallbackFailureRequest,
+  SendDurableExecutionCallbackFailureResponse,
+  SendDurableExecutionCallbackHeartbeatResponse,
+  SendDurableExecutionCallbackHeartbeatRequest,
+  SendDurableExecutionCallbackSuccessRequest,
 } from "@aws-sdk/client-lambda";
 
 export interface DurableApiClient {
   sendCallbackSuccess: (
-    request: SendDurableExecutionCallbackSuccessCommandInput,
-  ) => Promise<SendDurableExecutionCallbackSuccessCommandOutput>;
+    request: SendDurableExecutionCallbackSuccessRequest,
+  ) => Promise<SendDurableExecutionCallbackSuccessResponse>;
   sendCallbackFailure: (
-    request: SendDurableExecutionCallbackFailureCommandInput,
-  ) => Promise<SendDurableExecutionCallbackFailureCommandOutput>;
+    request: SendDurableExecutionCallbackFailureRequest,
+  ) => Promise<SendDurableExecutionCallbackFailureResponse>;
   sendCallbackHeartbeat: (
-    request: SendDurableExecutionCallbackHeartbeatCommandInput,
-  ) => Promise<SendDurableExecutionCallbackHeartbeatCommandOutput>;
+    request: SendDurableExecutionCallbackHeartbeatRequest,
+  ) => Promise<SendDurableExecutionCallbackHeartbeatResponse>;
 }
 
 export function createDurableApiClient(

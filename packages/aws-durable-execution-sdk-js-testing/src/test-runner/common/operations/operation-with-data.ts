@@ -3,10 +3,10 @@ import {
   Operation,
   OperationStatus,
   ErrorObject,
-  SendDurableExecutionCallbackSuccessCommandOutput,
-  SendDurableExecutionCallbackFailureCommandOutput,
-  SendDurableExecutionCallbackHeartbeatCommandOutput,
   Event,
+  SendDurableExecutionCallbackFailureResponse,
+  SendDurableExecutionCallbackHeartbeatResponse,
+  SendDurableExecutionCallbackSuccessResponse,
 } from "@aws-sdk/client-lambda";
 import {
   DurableOperation,
@@ -54,9 +54,9 @@ export interface OperationEvents {
   events: Event[];
 }
 
-export class OperationWithData<OperationResultValue = unknown>
-  implements DurableOperation<OperationResultValue>
-{
+export class OperationWithData<
+  OperationResultValue = unknown,
+> implements DurableOperation<OperationResultValue> {
   constructor(
     private readonly waitManager: OperationWaitManager,
     private readonly operationIndex: IndexedOperations,
@@ -318,7 +318,7 @@ export class OperationWithData<OperationResultValue = unknown>
 
   sendCallbackSuccess(
     result?: string,
-  ): Promise<SendDurableExecutionCallbackSuccessCommandOutput> {
+  ): Promise<SendDurableExecutionCallbackSuccessResponse> {
     const callbackDetails = this.getCallbackDetails();
 
     if (!callbackDetails) {
@@ -326,14 +326,14 @@ export class OperationWithData<OperationResultValue = unknown>
     }
 
     return this.apiClient.sendCallbackSuccess({
-      Result: result,
+      Result: result !== undefined ? Buffer.from(result) : result,
       CallbackId: callbackDetails.callbackId,
     });
   }
 
   sendCallbackFailure(
     error?: ErrorObject,
-  ): Promise<SendDurableExecutionCallbackFailureCommandOutput> {
+  ): Promise<SendDurableExecutionCallbackFailureResponse> {
     const callbackDetails = this.getCallbackDetails();
 
     if (!callbackDetails) {
@@ -345,7 +345,7 @@ export class OperationWithData<OperationResultValue = unknown>
     });
   }
 
-  sendCallbackHeartbeat(): Promise<SendDurableExecutionCallbackHeartbeatCommandOutput> {
+  sendCallbackHeartbeat(): Promise<SendDurableExecutionCallbackHeartbeatResponse> {
     const callbackDetails = this.getCallbackDetails();
 
     if (!callbackDetails) {
