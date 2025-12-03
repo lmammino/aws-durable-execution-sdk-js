@@ -17,6 +17,11 @@ import {
 } from "../../errors/checkpoint-errors/checkpoint-errors";
 import { DurableLogger } from "../../types/durable-logger";
 import { Checkpoint } from "./checkpoint-helper";
+import {
+  OperationLifecycleState,
+  OperationInfo,
+  OperationMetadata,
+} from "../../types";
 
 export const STEP_DATA_UPDATED_EVENT = "stepDataUpdated";
 
@@ -45,6 +50,14 @@ export class CheckpointManager implements Checkpoint {
   private readonly MAX_PAYLOAD_SIZE = 750 * 1024; // 750KB in bytes
   private isTerminating = false;
   private static textEncoder = new TextEncoder();
+
+  // Operation lifecycle tracking
+  private operations = new Map<string, OperationInfo>();
+
+  // Termination cooldown
+  private terminationTimer: NodeJS.Timeout | null = null;
+  private terminationReason: TerminationReason | null = null;
+  private readonly TERMINATION_COOLDOWN_MS = 50;
 
   constructor(
     private durableExecutionArn: string,
@@ -435,17 +448,42 @@ export class CheckpointManager implements Checkpoint {
 
     operations.forEach((operation) => {
       if (operation.Id) {
+        // Check if status changed
+        const oldStatus = this.stepData[operation.Id]?.Status;
+        const newStatus = operation.Status;
+
         this.stepData[operation.Id] = operation;
 
         log("📝", "Updated stepData entry:", operation);
 
         this.stepDataEmitter.emit(STEP_DATA_UPDATED_EVENT, operation.Id);
+
+        // If status changed and we have a waiting promise, resolve it
+        if (oldStatus !== newStatus) {
+          this.resolveWaitingOperation(operation.Id);
+        }
       }
     });
 
     log("✅", "StepData update completed:", {
       totalStepDataEntries: Object.keys(this.stepData).length,
     });
+  }
+
+  private resolveWaitingOperation(hashedStepId: string): void {
+    // Find operation by hashed ID in our operations map
+    for (const [stepId, op] of this.operations.entries()) {
+      if (hashId(stepId) === hashedStepId && op.resolver) {
+        log("✅", `Resolving waiting operation ${stepId} due to status change`);
+        op.resolver();
+        op.resolver = undefined;
+        if (op.timer) {
+          clearTimeout(op.timer);
+          op.timer = undefined;
+        }
+        break;
+      }
+    }
   }
 
   getQueueStatus(): {
@@ -456,5 +494,366 @@ export class CheckpointManager implements Checkpoint {
       queueLength: this.queue.length,
       isProcessing: this.isProcessing,
     };
+  }
+
+  // ===== New Lifecycle & Termination Methods =====
+
+  markOperationState(
+    stepId: string,
+    state: OperationLifecycleState,
+    options?: {
+      metadata?: OperationMetadata;
+      endTimestamp?: Date;
+    },
+  ): void {
+    let op = this.operations.get(stepId);
+
+    if (!op) {
+      // First call - create operation
+      if (!options?.metadata) {
+        throw new Error(`metadata required on first call for ${stepId}`);
+      }
+      op = {
+        stepId,
+        state,
+        metadata: options.metadata,
+        endTimestamp: options.endTimestamp,
+      };
+      this.operations.set(stepId, op);
+    } else {
+      // Update existing operation
+      op.state = state;
+      if (options?.endTimestamp !== undefined) {
+        op.endTimestamp = options.endTimestamp;
+      }
+    }
+
+    // Cleanup if transitioning to COMPLETED
+    if (state === OperationLifecycleState.COMPLETED) {
+      this.cleanupOperation(stepId);
+    }
+
+    // Check if we should terminate
+    // Don't check for IDLE_NOT_AWAITED - operation might be awaited later or intentionally not awaited
+    if (state !== OperationLifecycleState.IDLE_NOT_AWAITED) {
+      this.checkAndTerminate();
+    }
+  }
+
+  waitForRetryTimer(stepId: string): Promise<void> {
+    const op = this.operations.get(stepId);
+    if (!op) {
+      throw new Error(`Operation ${stepId} not found`);
+    }
+
+    if (op.state !== OperationLifecycleState.RETRY_WAITING) {
+      throw new Error(
+        `Operation ${stepId} must be in RETRY_WAITING state, got ${op.state}`,
+      );
+    }
+
+    // Start timer with polling
+    this.startTimerWithPolling(stepId, op.endTimestamp);
+
+    // Return promise that resolves when status changes
+    return new Promise((resolve) => {
+      op.resolver = resolve;
+    });
+  }
+
+  waitForStatusChange(stepId: string): Promise<void> {
+    const op = this.operations.get(stepId);
+    if (!op) {
+      throw new Error(`Operation ${stepId} not found`);
+    }
+
+    if (op.state !== OperationLifecycleState.IDLE_AWAITED) {
+      throw new Error(
+        `Operation ${stepId} must be in IDLE_AWAITED state, got ${op.state}`,
+      );
+    }
+
+    // Start timer with polling
+    this.startTimerWithPolling(stepId, op.endTimestamp);
+
+    // Return promise that resolves when status changes
+    return new Promise((resolve) => {
+      op.resolver = resolve;
+    });
+  }
+
+  markOperationAwaited(stepId: string): void {
+    const op = this.operations.get(stepId);
+    if (!op) {
+      log("⚠️", `Cannot mark operation as awaited: ${stepId} not found`);
+      return;
+    }
+
+    // Transition IDLE_NOT_AWAITED → IDLE_AWAITED
+    if (op.state === OperationLifecycleState.IDLE_NOT_AWAITED) {
+      op.state = OperationLifecycleState.IDLE_AWAITED;
+      log("📍", `Operation marked as awaited: ${stepId}`);
+      // Check if we should terminate now that operation is awaited
+      this.checkAndTerminate();
+    }
+  }
+
+  getOperationState(stepId: string): OperationLifecycleState | undefined {
+    return this.operations.get(stepId)?.state;
+  }
+
+  getAllOperations(): Map<string, OperationInfo> {
+    return new Map(this.operations);
+  }
+
+  // ===== Private Helper Methods =====
+
+  private cleanupOperation(stepId: string): void {
+    const op = this.operations.get(stepId);
+    if (!op) return;
+
+    // Clear timer
+    if (op.timer) {
+      clearTimeout(op.timer);
+      op.timer = undefined;
+    }
+
+    // Clear resolver
+    op.resolver = undefined;
+  }
+
+  private cleanupAllOperations(): void {
+    for (const op of this.operations.values()) {
+      if (op.timer) {
+        clearTimeout(op.timer);
+        op.timer = undefined;
+      }
+      op.resolver = undefined;
+    }
+  }
+
+  private checkAndTerminate(): void {
+    // Rule 1: Can't terminate if checkpoint queue is not empty
+    if (this.queue.length > 0) {
+      this.abortTermination();
+      return;
+    }
+
+    // Rule 2: Can't terminate if checkpoint is currently processing
+    if (this.isProcessing) {
+      this.abortTermination();
+      return;
+    }
+
+    // Rule 3: Can't terminate if there are pending force checkpoint promises
+    if (this.forceCheckpointPromises.length > 0) {
+      this.abortTermination();
+      return;
+    }
+
+    const allOps = Array.from(this.operations.values());
+
+    // Rule 4: Can't terminate if any operation is EXECUTING
+    const hasExecuting = allOps.some(
+      (op) => op.state === OperationLifecycleState.EXECUTING,
+    );
+
+    if (hasExecuting) {
+      this.abortTermination();
+      return;
+    }
+
+    // Rule 5: Clean up operations whose ancestors are complete or pending completion
+    for (const op of allOps) {
+      if (
+        op.state === OperationLifecycleState.RETRY_WAITING ||
+        op.state === OperationLifecycleState.IDLE_NOT_AWAITED ||
+        op.state === OperationLifecycleState.IDLE_AWAITED
+      ) {
+        if (this.hasPendingAncestorCompletion(op.stepId)) {
+          log(
+            "🧹",
+            `Cleaning up operation with completed ancestor: ${op.stepId}`,
+          );
+          this.cleanupOperation(op.stepId);
+          this.operations.delete(op.stepId);
+        }
+      }
+    }
+
+    // Re-check operations after cleanup
+    const remainingOps = Array.from(this.operations.values());
+
+    // Determine if we should terminate
+    const hasWaiting = remainingOps.some(
+      (op) =>
+        op.state === OperationLifecycleState.RETRY_WAITING ||
+        op.state === OperationLifecycleState.IDLE_NOT_AWAITED ||
+        op.state === OperationLifecycleState.IDLE_AWAITED,
+    );
+
+    if (hasWaiting) {
+      const reason = this.determineTerminationReason(remainingOps);
+      this.scheduleTermination(reason);
+    } else {
+      this.abortTermination();
+    }
+  }
+
+  private abortTermination(): void {
+    if (this.terminationTimer) {
+      clearTimeout(this.terminationTimer);
+      this.terminationTimer = null;
+      this.terminationReason = null;
+      log("🔄", "Termination aborted - conditions changed");
+    }
+  }
+
+  private scheduleTermination(reason: TerminationReason): void {
+    // If already scheduled with same reason, don't reschedule
+    if (this.terminationTimer && this.terminationReason === reason) {
+      return;
+    }
+
+    // Clear any existing timer
+    this.abortTermination();
+
+    // Schedule new termination
+    this.terminationReason = reason;
+    log("⏱️", "Scheduling termination", {
+      reason,
+      cooldownMs: this.TERMINATION_COOLDOWN_MS,
+    });
+
+    this.terminationTimer = setTimeout(() => {
+      this.executeTermination(reason);
+    }, this.TERMINATION_COOLDOWN_MS);
+  }
+
+  private executeTermination(reason: TerminationReason): void {
+    log("🛑", "Executing termination after cooldown", { reason });
+
+    // Clear timer
+    this.terminationTimer = null;
+    this.terminationReason = null;
+
+    // Cleanup all operations before terminating
+    this.cleanupAllOperations();
+
+    // Call termination manager directly
+    this.terminationManager.terminate({ reason });
+  }
+
+  private determineTerminationReason(ops: OperationInfo[]): TerminationReason {
+    // Priority: RETRY_SCHEDULED > WAIT_SCHEDULED > CALLBACK_PENDING
+
+    if (
+      ops.some(
+        (op) =>
+          op.state === OperationLifecycleState.RETRY_WAITING &&
+          op.metadata.subType === "Step",
+      )
+    ) {
+      return TerminationReason.RETRY_SCHEDULED;
+    }
+
+    if (
+      ops.some(
+        (op) =>
+          (op.state === OperationLifecycleState.IDLE_NOT_AWAITED ||
+            op.state === OperationLifecycleState.IDLE_AWAITED) &&
+          op.metadata.subType === "Wait",
+      )
+    ) {
+      return TerminationReason.WAIT_SCHEDULED;
+    }
+
+    return TerminationReason.CALLBACK_PENDING;
+  }
+
+  private startTimerWithPolling(stepId: string, endTimestamp?: Date): void {
+    const op = this.operations.get(stepId);
+    if (!op) return;
+
+    let delay: number;
+
+    if (endTimestamp) {
+      // Ensure endTimestamp is a Date object
+      const timestamp =
+        endTimestamp instanceof Date ? endTimestamp : new Date(endTimestamp);
+      // Wait until endTimestamp
+      delay = Math.max(0, timestamp.getTime() - Date.now());
+    } else {
+      // No timestamp, start polling immediately (1 second delay)
+      delay = 1000;
+    }
+
+    // Initialize poll count and start time for this operation
+    if (!op.pollCount) {
+      op.pollCount = 0;
+      op.pollStartTime = Date.now();
+    }
+
+    op.timer = setTimeout(() => {
+      this.forceRefreshAndCheckStatus(stepId);
+    }, delay);
+  }
+
+  private async forceRefreshAndCheckStatus(stepId: string): Promise<void> {
+    const op = this.operations.get(stepId);
+    if (!op) return;
+
+    // Check if we've exceeded max polling duration (15 minutes)
+    const MAX_POLL_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+    if (
+      op.pollStartTime &&
+      Date.now() - op.pollStartTime > MAX_POLL_DURATION_MS
+    ) {
+      // Stop polling after 15 minutes to prevent indefinite resource consumption.
+      // We don't resolve or reject the promise because the handler cannot continue
+      // without a status change. The execution will remain suspended until the
+      // operation completes or the Lambda times out.
+      log(
+        "⏱️",
+        `Max polling duration (15 min) exceeded for ${stepId}, stopping poll`,
+      );
+      if (op.timer) {
+        clearTimeout(op.timer);
+        op.timer = undefined;
+      }
+      return;
+    }
+
+    // Get old status before refresh
+    const oldStatus = this.stepData[hashId(stepId)]?.Status;
+
+    // Force checkpoint to refresh state from backend
+    await this.forceCheckpoint();
+
+    // Get new status after refresh
+    const newStatus = this.stepData[hashId(stepId)]?.Status;
+
+    // Check if status changed
+    if (newStatus !== oldStatus) {
+      // Status changed, resolve the waiting promise
+      log("✅", `Status changed for ${stepId}: ${oldStatus} → ${newStatus}`);
+      op.resolver?.();
+      op.resolver = undefined;
+
+      // Clear timer
+      if (op.timer) {
+        clearTimeout(op.timer);
+        op.timer = undefined;
+      }
+    } else {
+      // Status not changed yet, poll again with incremental backoff
+      // Start at 1s, increase by 1s each poll, max 10s
+      op.pollCount = (op.pollCount || 0) + 1;
+      const nextDelay = Math.min(op.pollCount * 1000, 10000);
+
+      op.timer = setTimeout(() => {
+        this.forceRefreshAndCheckStatus(stepId);
+      }, nextDelay);
+    }
   }
 }

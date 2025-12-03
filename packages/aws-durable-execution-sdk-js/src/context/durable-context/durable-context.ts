@@ -43,7 +43,6 @@ import { createPromiseHandler } from "../../handlers/promise-handler/promise-han
 import { createConcurrentExecutionHandler } from "../../handlers/concurrent-execution-handler/concurrent-execution-handler";
 import { OperationStatus } from "@aws-sdk/client-lambda";
 import { ModeManagement } from "./mode-management/mode-management";
-import { OPERATIONS_COMPLETE_EVENT } from "../../utils/constants/constants";
 import {
   getActiveContext,
   validateContextUsage,
@@ -68,8 +67,6 @@ export class DurableContextImpl<Logger extends DurableLogger>
   private _stepCounter: number = 0;
   private durableLogger: Logger;
   private modeAwareLoggingEnabled: boolean = true;
-  private runningOperations = new Set<string>();
-  private operationsEmitter = new EventEmitter();
   private checkpoint: CheckpointManager;
   private durableExecutionMode: DurableExecutionMode;
   private _parentId?: string;
@@ -249,25 +246,6 @@ export class DurableContextImpl<Logger extends DurableLogger>
     return null;
   }
 
-  private addRunningOperation(stepId: string): void {
-    this.runningOperations.add(stepId);
-  }
-
-  private removeRunningOperation(stepId: string): void {
-    this.runningOperations.delete(stepId);
-    if (this.runningOperations.size === 0) {
-      this.operationsEmitter.emit(OPERATIONS_COMPLETE_EVENT);
-    }
-  }
-
-  private hasRunningOperations(): boolean {
-    return this.runningOperations.size > 0;
-  }
-
-  private getOperationsEmitter(): EventEmitter {
-    return this.operationsEmitter;
-  }
-
   private withModeManagement<T>(operation: () => Promise<T>): Promise<T> {
     return this.modeManagement.withModeManagement(operation);
   }
@@ -296,10 +274,6 @@ export class DurableContextImpl<Logger extends DurableLogger>
         this.lambdaContext,
         this.createStepId.bind(this),
         this.durableLogger,
-        this.addRunningOperation.bind(this),
-        this.removeRunningOperation.bind(this),
-        this.hasRunningOperations.bind(this),
-        this.getOperationsEmitter.bind(this),
         this._parentId,
       );
 
@@ -323,8 +297,6 @@ export class DurableContextImpl<Logger extends DurableLogger>
         this.executionContext,
         this.checkpoint,
         this.createStepId.bind(this),
-        this.hasRunningOperations.bind(this),
-        this.getOperationsEmitter.bind(this),
         this._parentId,
         this.checkAndUpdateReplayMode.bind(this),
       );
@@ -395,8 +367,6 @@ export class DurableContextImpl<Logger extends DurableLogger>
         this.executionContext,
         this.checkpoint,
         this.createStepId.bind(this),
-        this.hasRunningOperations.bind(this),
-        this.getOperationsEmitter.bind(this),
         this._parentId,
         this.checkAndUpdateReplayMode.bind(this),
       );
@@ -448,8 +418,6 @@ export class DurableContextImpl<Logger extends DurableLogger>
         this.executionContext,
         this.checkpoint,
         this.createStepId.bind(this),
-        this.hasRunningOperations.bind(this),
-        this.getOperationsEmitter.bind(this),
         this.checkAndUpdateReplayMode.bind(this),
         this._parentId,
       );
@@ -501,10 +469,6 @@ export class DurableContextImpl<Logger extends DurableLogger>
         this.checkpoint,
         this.createStepId.bind(this),
         this.durableLogger,
-        this.addRunningOperation.bind(this),
-        this.removeRunningOperation.bind(this),
-        this.hasRunningOperations.bind(this),
-        this.getOperationsEmitter.bind(this),
         this._parentId,
       );
 

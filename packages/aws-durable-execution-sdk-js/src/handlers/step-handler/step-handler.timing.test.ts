@@ -1,225 +1,182 @@
-import {
-  createMockCheckpoint,
-  CheckpointFunction,
-} from "../../testing/mock-checkpoint";
 import { createStepHandler } from "./step-handler";
-import { ExecutionContext, StepSemantics } from "../../types";
-import { TerminationManager } from "../../termination-manager/termination-manager";
-import { TerminationReason } from "../../termination-manager/types";
+import { ExecutionContext, OperationLifecycleState } from "../../types";
 import { OperationStatus } from "@aws-sdk/client-lambda";
-import { hashId } from "../../utils/step-id-utils/step-id-utils";
-import { EventEmitter } from "events";
+import { Context } from "aws-lambda";
 import { createDefaultLogger } from "../../utils/logger/default-logger";
+import { Checkpoint } from "../../utils/checkpoint/checkpoint-helper";
+import { hashId } from "../../utils/step-id-utils/step-id-utils";
+
+jest.mock("../../utils/logger/logger");
+jest.mock("../../errors/serdes-errors/serdes-errors");
+
+import {
+  safeSerialize,
+  safeDeserialize,
+} from "../../errors/serdes-errors/serdes-errors";
+
+const mockSafeSerialize = safeSerialize as jest.MockedFunction<
+  typeof safeSerialize
+>;
+const mockSafeDeserialize = safeDeserialize as jest.MockedFunction<
+  typeof safeDeserialize
+>;
 
 describe("Step Handler Timing Tests", () => {
-  let mockExecutionContext: jest.Mocked<ExecutionContext>;
-  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
-  let mockParentContext: any;
-  let createStepId: jest.Mock;
-  let mockTerminationManager: jest.Mocked<TerminationManager>;
+  let mockContext: ExecutionContext;
+  let mockCheckpoint: Checkpoint;
+  let mockParentContext: Context;
+  let createStepId: () => string;
+  let stepIdCounter = 0;
 
   beforeEach(() => {
-    jest.resetAllMocks();
+    jest.clearAllMocks();
+    stepIdCounter = 0;
 
-    mockTerminationManager = {
-      terminate: jest.fn(),
-      getTerminationPromise: jest.fn(),
-    } as unknown as jest.Mocked<TerminationManager>;
-
-    mockExecutionContext = {
-      durableExecutionArn: "test-arn",
-      parentId: "test-parent-id",
-      terminationManager: mockTerminationManager,
-      getStepData: jest.fn().mockReturnValue(undefined),
+    mockContext = {
+      getStepData: jest.fn().mockReturnValue(null),
       _stepData: {},
-    } as unknown as jest.Mocked<ExecutionContext>;
+      durableExecutionArn: "test-arn",
+      terminationManager: {
+        terminate: jest.fn(),
+      },
+    } as any;
 
-    mockCheckpoint = createMockCheckpoint();
-    mockParentContext = { getRemainingTimeInMillis: (): number => 30000 };
-    createStepId = jest.fn().mockReturnValue("test-step-id");
+    mockCheckpoint = {
+      checkpoint: jest.fn().mockResolvedValue(undefined),
+      markOperationState: jest.fn(),
+      markOperationAwaited: jest.fn(),
+      waitForRetryTimer: jest.fn().mockResolvedValue(undefined),
+    } as any;
+
+    mockParentContext = {
+      getRemainingTimeInMillis: jest.fn().mockReturnValue(30000),
+    } as any;
+
+    createStepId = (): string => `step-${++stepIdCounter}`;
+
+    mockSafeSerialize.mockImplementation(async (_serdes, value) =>
+      JSON.stringify(value),
+    );
+    mockSafeDeserialize.mockImplementation(async (_serdes, value) =>
+      value ? JSON.parse(value) : undefined,
+    );
   });
 
-  describe("Step Handler Timing and Concurrency Tests", () => {
-    test("should terminate when retry is scheduled", async () => {
-      const stepFn = jest.fn().mockRejectedValue(new Error("Test error"));
-      const mockRetryStrategy = jest
-        .fn()
-        .mockReturnValue({ shouldRetry: true, delay: { seconds: 1 } });
+  it("should handle retry with scheduled delay", async () => {
+    const stepId = "step-1";
+    const hashedStepId = hashId(stepId);
+    const nextAttemptTime = new Date(Date.now() + 1000);
 
-      const mockHasRunningOperations = jest.fn().mockReturnValue(false);
-
-      const stepHandlerWithMocks = createStepHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        mockParentContext,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-      );
-
-      stepHandlerWithMocks("test-step", stepFn, {
-        retryStrategy: mockRetryStrategy,
-      });
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(mockTerminationManager.terminate).toHaveBeenCalledWith({
-        reason: TerminationReason.RETRY_SCHEDULED,
-        message: expect.stringContaining("test-step"),
-      });
-    });
-
-    test("should wait for pending step and continue execution", async () => {
-      const stepId = "test-step-id";
-      const hashedStepId = hashId(stepId);
-
-      // Create a step handler that will definitely hit the PENDING path
-      const mockGetStepData = jest
-        .fn()
-        .mockReturnValueOnce({
+    let callCount = 0;
+    (mockContext.getStepData as jest.Mock).mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return {
           Id: hashedStepId,
           Status: OperationStatus.PENDING,
-          StepDetails: { Attempt: 1 },
-        })
-        .mockReturnValueOnce(undefined); // After continue, return undefined to proceed
-
-      mockExecutionContext.getStepData = mockGetStepData;
-
-      const stepFn = jest.fn().mockResolvedValue("test-result");
-
-      // Mock hasRunningOperations to return true initially (to trigger waitForContinuation)
-      // then false to allow normal execution
-      const mockHasRunningOperations = jest
-        .fn()
-        .mockReturnValueOnce(true)
-        .mockReturnValue(false);
-
-      const stepHandlerWithMocks = createStepHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        mockParentContext,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-      );
-
-      const result = await stepHandlerWithMocks("test-step", stepFn);
-
-      // Verify the continue statement was executed by checking the result
-      expect(result).toBe("test-result");
-      expect(mockGetStepData).toHaveBeenCalled();
-    });
-
-    test("should retry interrupted AtMostOncePerRetry step and continue main loop", async () => {
-      const stepId = "test-step-id";
-      const hashedStepId = hashId(stepId);
-
-      // Set up step data with STARTED status (interrupted) for AtMostOncePerRetry
-      mockExecutionContext._stepData = {
-        [hashedStepId]: {
-          Id: hashedStepId,
-          Status: OperationStatus.STARTED,
-          StepDetails: { Attempt: 1 },
-        },
-      } as any;
-
-      mockExecutionContext.getStepData = jest
-        .fn()
-        .mockReturnValueOnce({
-          Id: hashedStepId,
-          Status: OperationStatus.STARTED,
-          StepDetails: { Attempt: 1 },
-        })
-        .mockReturnValue(undefined); // After continue, return undefined to proceed
-
-      const stepFn = jest.fn().mockResolvedValue("retry-result");
-
-      // Mock retry strategy that decides to retry the interrupted step
-      const mockRetryStrategy = jest.fn().mockReturnValue({
-        shouldRetry: true,
-        delay: { seconds: 2 },
-      });
-
-      // Mock hasRunningOperations to trigger waitForContinuation, then allow execution
-      const mockHasRunningOperations = jest
-        .fn()
-        .mockReturnValueOnce(true) // Trigger waitForContinuation in retry path (line 207)
-        .mockReturnValue(false); // Allow execution after continue
-
-      const stepHandlerWithMocks = createStepHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        mockParentContext,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-      );
-
-      const result = await stepHandlerWithMocks("test-step", stepFn, {
-        semantics: StepSemantics.AtMostOncePerRetry, // This is key for line 207
-        retryStrategy: mockRetryStrategy,
-      });
-
-      expect(result).toBe("retry-result");
-      expect(mockRetryStrategy).toHaveBeenCalled();
-      expect(mockHasRunningOperations).toHaveBeenCalled();
-    });
-
-    test("should retry step with scheduled delay", async () => {
-      const stepId = "test-step-id";
-      const hashedStepId = hashId(stepId);
-
-      mockExecutionContext._stepData = {
-        [hashedStepId]: {
-          Id: hashedStepId,
-          Status: OperationStatus.STARTED,
           StepDetails: {
             Attempt: 1,
-            NextAttemptTimestamp: new Date(Date.now() + 1000),
+            NextAttemptTimestamp: nextAttemptTime,
           },
-        },
-      } as any;
-
-      const stepFn = jest
-        .fn()
-        .mockRejectedValueOnce(new Error("Test error"))
-        .mockResolvedValue("result");
-
-      const mockRetryStrategy = jest
-        .fn()
-        .mockReturnValue({ shouldRetry: true, delay: { seconds: 1 } });
-
-      const mockHasRunningOperations = jest
-        .fn()
-        .mockReturnValueOnce(true) // Trigger waitForContinuation in executeStep
-        .mockReturnValue(false); // Allow execution after continue
-
-      const stepHandlerWithMocks = createStepHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        mockParentContext,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-      );
-
-      const result = await stepHandlerWithMocks("test-step", stepFn, {
-        retryStrategy: mockRetryStrategy,
-      });
-
-      expect(result).toBe("result");
+        };
+      } else {
+        return null; // After retry timer, proceed with execution
+      }
     });
+
+    const stepHandler = createStepHandler(
+      mockContext,
+      mockCheckpoint,
+      mockParentContext,
+      createStepId,
+      createDefaultLogger(),
+    );
+
+    const stepFn = jest.fn().mockResolvedValue("retry-result");
+
+    const result = await stepHandler("test-step", stepFn);
+
+    expect(result).toBe("retry-result");
+    expect(mockCheckpoint.markOperationState).toHaveBeenCalledWith(
+      stepId,
+      OperationLifecycleState.RETRY_WAITING,
+      expect.objectContaining({
+        endTimestamp: nextAttemptTime,
+      }),
+    );
+    expect(mockCheckpoint.waitForRetryTimer).toHaveBeenCalledWith(stepId);
+    expect(stepFn).toHaveBeenCalled();
+  });
+
+  it("should execute step function after retry timer completes", async () => {
+    const stepId = "step-1";
+    const hashedStepId = hashId(stepId);
+
+    let callCount = 0;
+    (mockContext.getStepData as jest.Mock).mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          Id: hashedStepId,
+          Status: OperationStatus.PENDING,
+          StepDetails: {
+            NextAttemptTimestamp: new Date(Date.now() + 100),
+          },
+        };
+      }
+      return null; // After retry timer, no cached data - will execute
+    });
+
+    const stepHandler = createStepHandler(
+      mockContext,
+      mockCheckpoint,
+      mockParentContext,
+      createStepId,
+      createDefaultLogger(),
+    );
+
+    const stepFn = jest.fn().mockResolvedValue("executed-result");
+
+    const result = await stepHandler("test-step", stepFn);
+
+    expect(result).toBe("executed-result");
+    expect(stepFn).toHaveBeenCalled();
+    expect(mockCheckpoint.waitForRetryTimer).toHaveBeenCalledWith(stepId);
+  });
+
+  it("should execute step function after waiting for retry", async () => {
+    const stepId = "step-1";
+    const hashedStepId = hashId(stepId);
+
+    let callCount = 0;
+    (mockContext.getStepData as jest.Mock).mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          Id: hashedStepId,
+          Status: OperationStatus.PENDING,
+          StepDetails: {
+            NextAttemptTimestamp: new Date(Date.now() + 50),
+          },
+        };
+      }
+      return null; // After retry, no cached data
+    });
+
+    const stepHandler = createStepHandler(
+      mockContext,
+      mockCheckpoint,
+      mockParentContext,
+      createStepId,
+      createDefaultLogger(),
+    );
+
+    const stepFn = jest.fn().mockResolvedValue("executed-after-retry");
+
+    const result = await stepHandler("test-step", stepFn);
+
+    expect(result).toBe("executed-after-retry");
+    expect(stepFn).toHaveBeenCalled();
+    expect(mockCheckpoint.waitForRetryTimer).toHaveBeenCalled();
   });
 });

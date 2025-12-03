@@ -1,380 +1,209 @@
-import {
-  createMockCheckpoint,
-  CheckpointFunction,
-} from "../../testing/mock-checkpoint";
 import { createWaitForConditionHandler } from "./wait-for-condition-handler";
 import {
   DurableLogger,
   ExecutionContext,
   WaitForConditionCheckFunc,
   WaitForConditionConfig,
+  OperationLifecycleState,
 } from "../../types";
-import { TerminationManager } from "../../termination-manager/termination-manager";
-import { TerminationReason } from "../../termination-manager/types";
 import { OperationStatus } from "@aws-sdk/client-lambda";
 import { hashId } from "../../utils/step-id-utils/step-id-utils";
-import { EventEmitter } from "events";
 import { createDefaultLogger } from "../../utils/logger/default-logger";
+import { Checkpoint } from "../../utils/checkpoint/checkpoint-helper";
+
+jest.mock("../../utils/logger/logger");
+jest.mock("../../errors/serdes-errors/serdes-errors");
+
+import {
+  safeSerialize,
+  safeDeserialize,
+} from "../../errors/serdes-errors/serdes-errors";
+
+const mockSafeSerialize = safeSerialize as jest.MockedFunction<
+  typeof safeSerialize
+>;
+const mockSafeDeserialize = safeDeserialize as jest.MockedFunction<
+  typeof safeDeserialize
+>;
 
 describe("WaitForCondition Handler Timing Tests", () => {
-  let mockExecutionContext: jest.Mocked<ExecutionContext>;
-  let mockCheckpoint: jest.MockedFunction<CheckpointFunction>;
-  let _mockParentContext: any;
+  let mockContext: ExecutionContext;
+  let mockCheckpoint: Checkpoint;
   let createStepId: jest.Mock;
-  let _waitForConditionHandler: ReturnType<
-    typeof createWaitForConditionHandler
-  >;
-  let mockTerminationManager: jest.Mocked<TerminationManager>;
 
   beforeEach(() => {
-    jest.resetAllMocks();
+    jest.clearAllMocks();
 
-    mockTerminationManager = {
-      terminate: jest.fn(),
-      getTerminationPromise: jest.fn(),
-    } as unknown as jest.Mocked<TerminationManager>;
-
-    mockExecutionContext = {
-      durableExecutionArn: "test-arn",
-      parentId: "test-parent-id",
-      terminationManager: mockTerminationManager,
-      getStepData: jest.fn().mockReturnValue(undefined),
+    mockContext = {
+      getStepData: jest.fn().mockReturnValue(null),
       _stepData: {},
-    } as unknown as jest.Mocked<ExecutionContext>;
+      durableExecutionArn: "test-arn",
+      terminationManager: {
+        terminate: jest.fn(),
+      },
+    } as any;
 
-    mockCheckpoint = createMockCheckpoint();
-    _mockParentContext = { getRemainingTimeInMillis: (): number => 30000 };
+    mockCheckpoint = {
+      checkpoint: jest.fn().mockResolvedValue(undefined),
+      markOperationState: jest.fn(),
+      markOperationAwaited: jest.fn(),
+      waitForRetryTimer: jest.fn().mockResolvedValue(undefined),
+    } as any;
+
     createStepId = jest.fn().mockReturnValue("test-step-id");
 
-    _waitForConditionHandler = createWaitForConditionHandler(
-      mockExecutionContext,
-      mockCheckpoint,
-      createStepId,
-      createDefaultLogger(),
-      jest.fn(),
-      jest.fn(),
-      jest.fn().mockReturnValue(false),
-      () => new EventEmitter(),
-      undefined, // parentId
+    mockSafeSerialize.mockImplementation(async (_serdes, value) =>
+      JSON.stringify(value),
+    );
+    mockSafeDeserialize.mockImplementation(async (_serdes, value) =>
+      value ? JSON.parse(value) : undefined,
     );
   });
 
-  describe("WaitForCondition Timing and Concurrency Tests", () => {
-    test("should terminate when retry is scheduled and no running operations", async () => {
-      const checkFn: WaitForConditionCheckFunc<
-        { complete: boolean },
-        DurableLogger
-      > = jest.fn().mockReturnValue({ complete: false });
+  it("should handle retry with scheduled delay", async () => {
+    const stepId = "test-step-id";
+    const hashedStepId = hashId(stepId);
+    const nextAttemptTime = new Date(Date.now() + 1000);
 
-      const config: WaitForConditionConfig<{ complete: boolean }> = {
-        initialState: { complete: false },
-        waitStrategy: () => ({ shouldContinue: true, delay: { seconds: 1 } }),
-      };
-
-      const mockHasRunningOperations = jest.fn().mockReturnValue(false);
-
-      const waitForConditionHandlerWithMocks = createWaitForConditionHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-        undefined, // parentId
-      );
-
-      waitForConditionHandlerWithMocks("test-wait", checkFn, config);
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(mockTerminationManager.terminate).toHaveBeenCalledWith({
-        reason: TerminationReason.RETRY_SCHEDULED,
-        message: expect.stringContaining("test-wait"),
-      });
-    });
-
-    test("should wait for pending condition and continue main loop execution", async () => {
-      const stepId = "test-step-id";
-      const hashedStepId = hashId(stepId);
-
-      // Create a waitForCondition handler that will hit the PENDING path then succeed
-      const mockGetStepData = jest
-        .fn()
-        .mockReturnValueOnce({
-          Id: hashedStepId,
-          Status: OperationStatus.PENDING,
-          StepDetails: { Attempt: 1 },
-        })
-        .mockReturnValue({
-          Id: hashedStepId,
-          Status: OperationStatus.SUCCEEDED,
-          StepDetails: { Result: JSON.stringify({ complete: true }) },
-        });
-
-      mockExecutionContext.getStepData = mockGetStepData;
-
-      const checkFn: WaitForConditionCheckFunc<
-        { complete: boolean },
-        DurableLogger
-      > = jest.fn().mockReturnValue({ complete: true });
-
-      const config: WaitForConditionConfig<{ complete: boolean }> = {
-        initialState: { complete: false },
-        waitStrategy: () => ({ shouldContinue: false, delay: { seconds: 0 } }),
-      };
-
-      // Mock hasRunningOperations to return true initially (to trigger waitForContinuation)
-      // then false to allow normal execution
-      const mockHasRunningOperations = jest
-        .fn()
-        .mockReturnValueOnce(true)
-        .mockReturnValue(false);
-
-      const waitForConditionHandlerWithMocks = createWaitForConditionHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-        undefined, // parentId
-      );
-
-      const result = await waitForConditionHandlerWithMocks(
-        "test-wait",
-        checkFn,
-        config,
-      );
-
-      // Verify the continue statement was executed by checking the result
-      expect(result).toEqual({ complete: true });
-      expect(mockGetStepData).toHaveBeenCalled(); // Called multiple times due to main loop
-    });
-
-    test("should retry condition check and continue main loop", async () => {
-      const stepId = "test-step-id";
-      const hashedStepId = hashId(stepId);
-
-      const checkFn: WaitForConditionCheckFunc<
-        { count: number },
-        DurableLogger
-      > = jest
-        .fn()
-        .mockReturnValueOnce({ count: 1 })
-        .mockReturnValueOnce({ count: 2 });
-
-      const config: WaitForConditionConfig<{ count: number }> = {
-        initialState: { count: 0 },
-        waitStrategy: (state, _attempt) => ({
-          shouldContinue: state.count < 2, // Continue until count reaches 2
-          delay: { seconds: 1 },
-        }),
-      };
-
-      // Mock getStepData to simulate retry flow
-      const mockGetStepData = jest
-        .fn()
-        .mockReturnValueOnce(undefined) // First execution - will retry
-        .mockReturnValueOnce({
+    let callCount = 0;
+    (mockContext.getStepData as jest.Mock).mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return {
           Id: hashedStepId,
           Status: OperationStatus.PENDING,
           StepDetails: {
             Attempt: 1,
-            Result: JSON.stringify({ count: 1 }),
+            NextAttemptTimestamp: nextAttemptTime,
           },
-        })
-        .mockReturnValue(undefined); // After continue, proceed with final execution
-
-      mockExecutionContext.getStepData = mockGetStepData;
-
-      // Mock hasRunningOperations to trigger waitForContinuation, then allow execution
-      const mockHasRunningOperations = jest
-        .fn()
-        .mockReturnValueOnce(true) // Trigger waitForContinuation in retry path
-        .mockReturnValue(false); // Allow execution after continue
-
-      const waitForConditionHandlerWithMocks = createWaitForConditionHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-        undefined, // parentId
-      );
-
-      const result = await waitForConditionHandlerWithMocks(
-        "test-wait",
-        checkFn,
-        config,
-      );
-
-      expect(result).toEqual({ count: 2 });
-      expect(mockHasRunningOperations).toHaveBeenCalled();
-      expect(checkFn).toHaveBeenCalledTimes(2);
+        };
+      }
+      return null;
     });
 
-    test("should handle condition check with scheduled delay and main loop continuation", async () => {
-      const stepId = "test-step-id";
-      const hashedStepId = hashId(stepId);
+    const handler = createWaitForConditionHandler(
+      mockContext,
+      mockCheckpoint,
+      createStepId,
+      createDefaultLogger(),
+      undefined,
+    );
 
-      mockExecutionContext._stepData = {
-        [hashedStepId]: {
-          Id: hashedStepId,
-          Status: OperationStatus.READY,
-          StepDetails: {
-            Attempt: 1,
-            NextAttemptTimestamp: new Date(Date.now() + 1000),
-            Result: JSON.stringify({ progress: 50 }),
-          },
-        },
-      } as any;
+    const checkFn: WaitForConditionCheckFunc<{ count: number }, DurableLogger> =
+      jest.fn().mockResolvedValue({ count: 1 });
 
-      const checkFn: WaitForConditionCheckFunc<
-        { progress: number },
-        DurableLogger
-      > = jest
-        .fn()
-        .mockReturnValueOnce({ progress: 75 })
-        .mockReturnValueOnce({ progress: 100 });
+    const config: WaitForConditionConfig<{ count: number }> = {
+      initialState: { count: 0 },
+      waitStrategy: () => ({ shouldContinue: false }),
+    };
 
-      const config: WaitForConditionConfig<{ progress: number }> = {
-        initialState: { progress: 0 },
-        waitStrategy: (state, _attempt) => ({
-          shouldContinue: state.progress < 100,
-          delay: { seconds: 2 },
-        }),
-      };
+    const result = await handler(checkFn, config);
 
-      // Mock getStepData to simulate the flow: READY -> retry -> PENDING -> continue -> success
-      const mockGetStepData = jest
-        .fn()
-        .mockReturnValueOnce({
-          Id: hashedStepId,
-          Status: OperationStatus.READY,
-          StepDetails: {
-            Attempt: 1,
-            Result: JSON.stringify({ progress: 50 }),
-          },
-        })
-        .mockReturnValueOnce({
+    expect(result).toEqual({ count: 1 });
+    expect(mockCheckpoint.markOperationState).toHaveBeenCalledWith(
+      stepId,
+      OperationLifecycleState.RETRY_WAITING,
+      expect.objectContaining({
+        endTimestamp: nextAttemptTime,
+      }),
+    );
+    expect(mockCheckpoint.waitForRetryTimer).toHaveBeenCalledWith(stepId);
+  });
+
+  it("should execute check function after retry timer", async () => {
+    const stepId = "test-step-id";
+    const hashedStepId = hashId(stepId);
+
+    let callCount = 0;
+    (mockContext.getStepData as jest.Mock).mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return {
           Id: hashedStepId,
           Status: OperationStatus.PENDING,
-          StepDetails: { Attempt: 2 },
-        })
-        .mockReturnValueOnce(undefined); // After continue, proceed with final execution
-
-      mockExecutionContext.getStepData = mockGetStepData;
-
-      const mockHasRunningOperations = jest
-        .fn()
-        .mockReturnValueOnce(true) // Trigger waitForContinuation in retry
-        .mockReturnValue(false); // Allow execution after continue
-
-      const waitForConditionHandlerWithMocks = createWaitForConditionHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-        undefined, // parentId
-      );
-
-      const result = await waitForConditionHandlerWithMocks(
-        "test-wait",
-        checkFn,
-        config,
-      );
-
-      expect(result).toEqual({ progress: 100 });
-      expect(checkFn).toHaveBeenCalledTimes(2);
+          StepDetails: {
+            NextAttemptTimestamp: new Date(Date.now() + 100),
+          },
+        };
+      }
+      return null;
     });
 
-    test("should handle concurrent operations during retry with main loop", async () => {
-      const stepId = "test-step-id";
-      const hashedStepId = hashId(stepId);
+    const handler = createWaitForConditionHandler(
+      mockContext,
+      mockCheckpoint,
+      createStepId,
+      createDefaultLogger(),
+      undefined,
+    );
 
-      const checkFn: WaitForConditionCheckFunc<
-        { attempts: number },
-        DurableLogger
-      > = jest
-        .fn()
-        .mockReturnValueOnce({ attempts: 1 })
-        .mockReturnValueOnce({ attempts: 2 })
-        .mockReturnValueOnce({ attempts: 3 });
+    const checkFn: WaitForConditionCheckFunc<
+      { progress: number },
+      DurableLogger
+    > = jest.fn().mockResolvedValue({ progress: 100 });
 
-      const config: WaitForConditionConfig<{ attempts: number }> = {
-        initialState: { attempts: 0 },
-        waitStrategy: (state) => ({
-          shouldContinue: state.attempts < 3,
-          delay: { seconds: 1 },
-        }),
-      };
+    const config: WaitForConditionConfig<{ progress: number }> = {
+      initialState: { progress: 0 },
+      waitStrategy: () => ({ shouldContinue: false }),
+    };
 
-      // Simulate multiple loop iterations with different states
-      const mockGetStepData = jest
-        .fn()
-        .mockReturnValueOnce(undefined) // First execution - will retry
-        .mockReturnValueOnce({
+    const result = await handler(checkFn, config);
+
+    expect(result).toEqual({ progress: 100 });
+    expect(checkFn).toHaveBeenCalled();
+    expect(mockCheckpoint.waitForRetryTimer).toHaveBeenCalled();
+  });
+
+  it("should handle multiple retry iterations", async () => {
+    const stepId = "test-step-id";
+    const hashedStepId = hashId(stepId);
+
+    let callCount = 0;
+    (mockContext.getStepData as jest.Mock).mockImplementation(() => {
+      callCount++;
+      if (callCount === 1) {
+        return {
           Id: hashedStepId,
           Status: OperationStatus.PENDING,
-          StepDetails: { Attempt: 1 },
-        })
-        .mockReturnValueOnce({
-          Id: hashedStepId,
-          Status: OperationStatus.READY,
           StepDetails: {
-            Attempt: 2,
-            Result: JSON.stringify({ attempts: 1 }),
+            NextAttemptTimestamp: new Date(Date.now() + 50),
           },
-        })
-        .mockReturnValueOnce({
-          Id: hashedStepId,
-          Status: OperationStatus.PENDING,
-          StepDetails: { Attempt: 2 },
-        })
-        .mockReturnValue(undefined); // Final execution
-
-      mockExecutionContext.getStepData = mockGetStepData;
-
-      // Mock concurrent operations scenario
-      const mockHasRunningOperations = jest
-        .fn()
-        .mockReturnValueOnce(true) // First retry - has operations
-        .mockReturnValueOnce(false) // Allow continuation
-        .mockReturnValueOnce(true) // Second retry - has operations
-        .mockReturnValue(false); // Allow final execution
-
-      const waitForConditionHandlerWithMocks = createWaitForConditionHandler(
-        mockExecutionContext,
-        mockCheckpoint,
-        createStepId,
-        createDefaultLogger(),
-        jest.fn(),
-        jest.fn(),
-        mockHasRunningOperations,
-        () => new EventEmitter(),
-        undefined, // parentId
-      );
-
-      const result = await waitForConditionHandlerWithMocks(
-        "test-wait",
-        checkFn,
-        config,
-      );
-
-      expect(result).toEqual({ attempts: 3 });
-      expect(mockHasRunningOperations).toHaveBeenCalled();
-      expect(checkFn).toHaveBeenCalledTimes(3); // Check function called 3 times
+        };
+      }
+      return null;
     });
+
+    const handler = createWaitForConditionHandler(
+      mockContext,
+      mockCheckpoint,
+      createStepId,
+      createDefaultLogger(),
+      undefined,
+    );
+
+    let checkCallCount = 0;
+    const checkFn: WaitForConditionCheckFunc<
+      { attempts: number },
+      DurableLogger
+    > = jest.fn().mockImplementation(async () => {
+      checkCallCount++;
+      return { attempts: checkCallCount };
+    });
+
+    const waitStrategy = jest
+      .fn()
+      .mockReturnValueOnce({ shouldContinue: true, delay: { milliseconds: 1 } })
+      .mockReturnValue({ shouldContinue: false });
+
+    const config: WaitForConditionConfig<{ attempts: number }> = {
+      initialState: { attempts: 0 },
+      waitStrategy,
+    };
+
+    const result = await handler(checkFn, config);
+
+    expect(result.attempts).toBeGreaterThan(0);
+    expect(checkFn).toHaveBeenCalled();
+    expect(mockCheckpoint.waitForRetryTimer).toHaveBeenCalled();
   });
 });

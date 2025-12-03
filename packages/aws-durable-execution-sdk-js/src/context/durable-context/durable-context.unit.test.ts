@@ -36,6 +36,12 @@ describe("DurableContext", () => {
       force: jest.fn().mockResolvedValue(undefined),
       setTerminating: jest.fn(),
       hasPendingAncestorCompletion: jest.fn().mockReturnValue(false),
+      markOperationState: jest.fn(),
+      markOperationAwaited: jest.fn(),
+      waitForStatusChange: jest.fn().mockResolvedValue(undefined),
+      waitForRetryTimer: jest.fn().mockResolvedValue(undefined),
+      getOperationState: jest.fn(),
+      getAllOperations: jest.fn().mockReturnValue([]),
     },
   } as any;
 
@@ -82,7 +88,9 @@ describe("DurableContext", () => {
     );
     createCallback.mockReturnValue(jest.fn());
     createWaitForCallbackHandler.mockReturnValue(jest.fn());
-    createWaitForConditionHandler.mockReturnValue(jest.fn());
+    createWaitForConditionHandler.mockReturnValue(
+      () => new DurablePromise(() => Promise.resolve({})),
+    );
     createMapHandler.mockReturnValue(jest.fn());
     createParallelHandler.mockReturnValue(jest.fn());
     createConcurrentExecutionHandler.mockReturnValue(jest.fn());
@@ -498,9 +506,10 @@ describe("DurableContext", () => {
       );
 
       await context.invoke("func", {});
-      const hasRunningOperationsFn = createInvokeHandler.mock.calls[0][3];
 
-      expect(hasRunningOperationsFn()).toBe(false);
+      // New invoke handler uses centralized termination, no hasRunningOperations parameter
+      // Verify it was called with the new signature (context, checkpoint, createStepId, parentId, checkAndUpdateReplayMode)
+      expect(createInvokeHandler.mock.calls[0].length).toBe(5);
     });
 
     it("should call map handler", async () => {
@@ -876,49 +885,6 @@ describe("DurableContext", () => {
 
       expect(context.promise.any).toBeDefined();
       expect(typeof context.promise.any).toBe("function");
-    });
-  });
-
-  describe("operationsEmitter", () => {
-    it("should pass operationsEmitter to step handler", async () => {
-      const executionContext = createMockExecutionContext();
-      const context = createDurableContext(
-        executionContext,
-        mockContext,
-        DurableExecutionMode.ExecutionMode,
-        mockLogger,
-        undefined,
-        mockDurableExecution,
-      );
-
-      const { createStepHandler } = jest.requireMock(
-        "../../handlers/step-handler/step-handler",
-      );
-
-      let capturedGetOperationsEmitter: (() => any) | undefined;
-      createStepHandler.mockImplementation(
-        (
-          _ctx: any,
-          _checkpoint: any,
-          _parentCtx: any,
-          _createStepId: any,
-          _createLogger: any,
-          _addOp: any,
-          _removeOp: any,
-          _hasOp: any,
-          getOperationsEmitter: () => any,
-        ): (() => Promise<string>) => {
-          capturedGetOperationsEmitter = getOperationsEmitter;
-          return async () => "result";
-        },
-      );
-
-      await context.step("test", async () => "value");
-
-      expect(capturedGetOperationsEmitter).toBeDefined();
-      const emitter = capturedGetOperationsEmitter!();
-      expect(emitter).toBeDefined();
-      expect(typeof emitter.emit).toBe("function");
     });
   });
 
