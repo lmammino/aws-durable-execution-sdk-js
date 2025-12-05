@@ -38,6 +38,53 @@ export class ConcurrencyController<Logger extends DurableLogger> {
     );
   }
 
+  private getCompletionReason<T, R>(
+    failureCount: number,
+    successCount: number,
+    completedCount: number,
+    items: ConcurrentExecutionItem<T>[],
+    config: ConcurrencyConfig<R>,
+  ): "ALL_COMPLETED" | "MIN_SUCCESSFUL_REACHED" | "FAILURE_TOLERANCE_EXCEEDED" {
+    // Check tolerance first, before checking if all completed
+    const completion = config.completionConfig;
+
+    // Handle fail-fast behavior (no completion config or empty completion config)
+    if (!completion) {
+      if (failureCount > 0) return "FAILURE_TOLERANCE_EXCEEDED";
+    } else {
+      const hasAnyCompletionCriteria = Object.values(completion).some(
+        (value) => value !== undefined,
+      );
+      if (!hasAnyCompletionCriteria) {
+        if (failureCount > 0) return "FAILURE_TOLERANCE_EXCEEDED";
+      } else {
+        // Check specific tolerance thresholds
+        if (
+          completion.toleratedFailureCount !== undefined &&
+          failureCount > completion.toleratedFailureCount
+        ) {
+          return "FAILURE_TOLERANCE_EXCEEDED";
+        }
+        if (completion.toleratedFailurePercentage !== undefined) {
+          const failurePercentage = (failureCount / items.length) * 100;
+          if (failurePercentage > completion.toleratedFailurePercentage) {
+            return "FAILURE_TOLERANCE_EXCEEDED";
+          }
+        }
+      }
+    }
+
+    // Check other completion reasons
+    if (completedCount === items.length) return "ALL_COMPLETED";
+    if (
+      config.completionConfig?.minSuccessful !== undefined &&
+      successCount >= config.completionConfig.minSuccessful
+    )
+      return "MIN_SUCCESSFUL_REACHED";
+
+    return "ALL_COMPLETED";
+  }
+
   async executeItems<T, R>(
     items: ConcurrentExecutionItem<T>[],
     executor: ConcurrentExecutor<T, R, Logger>,
@@ -212,25 +259,21 @@ export class ConcurrencyController<Logger extends DurableLogger> {
       totalCount: resultItems.length,
     });
 
-    // Reconstruct the completion reason based on replay results
     const successCount = resultItems.filter(
       (item) => item.status === BatchItemStatus.SUCCEEDED,
     ).length;
+    const failureCount = completedCount - successCount;
 
-    const getCompletionReason = ():
-      | "ALL_COMPLETED"
-      | "MIN_SUCCESSFUL_REACHED"
-      | "FAILURE_TOLERANCE_EXCEEDED" => {
-      if (completedCount === items.length) return "ALL_COMPLETED";
-      if (
-        config.completionConfig?.minSuccessful !== undefined &&
-        successCount >= config.completionConfig.minSuccessful
-      )
-        return "MIN_SUCCESSFUL_REACHED";
-      return "FAILURE_TOLERANCE_EXCEEDED";
-    };
-
-    return new BatchResultImpl(resultItems, getCompletionReason());
+    return new BatchResultImpl(
+      resultItems,
+      this.getCompletionReason(
+        failureCount,
+        successCount,
+        completedCount,
+        items,
+        config,
+      ),
+    );
   }
 
   private async executeItemsConcurrently<T, R>(
@@ -301,17 +344,19 @@ export class ConcurrencyController<Logger extends DurableLogger> {
         return false;
       };
 
-      const getCompletionReason = ():
+      const getCompletionReason = (
+        failureCount: number,
+      ):
         | "ALL_COMPLETED"
         | "MIN_SUCCESSFUL_REACHED"
         | "FAILURE_TOLERANCE_EXCEEDED" => {
-        if (completedCount === items.length) return "ALL_COMPLETED";
-        if (
-          config.completionConfig?.minSuccessful !== undefined &&
-          successCount >= config.completionConfig.minSuccessful
-        )
-          return "MIN_SUCCESSFUL_REACHED";
-        return "FAILURE_TOLERANCE_EXCEEDED";
+        return this.getCompletionReason(
+          failureCount,
+          successCount,
+          completedCount,
+          items,
+          config,
+        );
       };
 
       const tryStartNext = (): void => {
@@ -408,7 +453,7 @@ export class ConcurrencyController<Logger extends DurableLogger> {
 
           const result = new BatchResultImpl(
             finalBatchItems,
-            getCompletionReason(),
+            getCompletionReason(failureCount),
           );
           resolve(result);
         } else {
