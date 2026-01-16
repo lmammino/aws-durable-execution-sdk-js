@@ -1,8 +1,6 @@
 #!/usr/bin/env tsx
 
 import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
-import { config as dotenvConfig } from "dotenv";
 import { ArgumentParser } from "argparse";
 import {
   LambdaClient,
@@ -17,6 +15,14 @@ import {
   ResourceConflictException,
   UpdateFunctionConfigurationCommandInput,
   DeleteFunctionCommand,
+  Architecture,
+  CreateFunctionRequest,
+  PublishVersionCommand,
+  FunctionVersionLatestPublished,
+  LastUpdateStatus,
+  State,
+  LastUpdateStatusReasonCode,
+  PutFunctionScalingConfigCommand,
 } from "@aws-sdk/client-lambda";
 import { ExamplesWithConfig } from "../src/types";
 import catalog from "@aws/durable-execution-sdk-js-examples/catalog";
@@ -26,10 +32,11 @@ const DEBUG = false;
 // Types
 interface EnvironmentVariables {
   AWS_ACCOUNT_ID: string;
-  LAMBDA_ENDPOINT: string;
   AWS_REGION: string;
+  CAPACITY_PROVIDER_ARN: string;
   GITHUB_ACTIONS?: string;
   GITHUB_ENV?: string;
+  LAMBDA_ENDPOINT?: string;
 }
 
 // Configuration and validation
@@ -37,6 +44,7 @@ function parseArgs(): {
   example: string;
   functionName: string;
   runtime?: string;
+  useCapacityProvider: boolean;
 } {
   const parser = new ArgumentParser({
     description: "Deploy Lambda function with AWS Durable Execution SDK",
@@ -57,29 +65,28 @@ function parseArgs(): {
     help: "Lambda nodejs runtime version (default: 24.x)",
   });
 
+  parser.add_argument("--use-capacity-provider", {
+    action: "store_true",
+    help: "Deploy function with capacity provider configuration",
+  });
+
   const args = parser.parse_args();
 
   return {
     example: args.example,
     functionName: args.function_name || args.example,
     runtime: args.runtime,
+    useCapacityProvider: args.use_capacity_provider,
   };
 }
 
 function loadEnvironmentVariables(): EnvironmentVariables {
-  // Load environment variables
-  if (!process.env.GITHUB_ACTIONS) {
-    // Not in GitHub Actions - try to load .secrets file
-    const secretsPath = resolve("../../.secrets");
-    if (existsSync(secretsPath)) {
-      dotenvConfig({ path: secretsPath, override: true, quiet: true });
-    } else {
-      console.warn("Warning: .secrets file not found");
-    }
-  }
-
   // Validate required environment variables
-  const requiredVars = ["AWS_ACCOUNT_ID", "LAMBDA_ENDPOINT"];
+  const requiredVars = [
+    "AWS_ACCOUNT_ID",
+    "CAPACITY_PROVIDER_ARN",
+    "AWS_REGION",
+  ];
   const missingVars = requiredVars.filter((varName) => !process.env[varName]);
 
   if (missingVars.length > 0) {
@@ -91,8 +98,9 @@ function loadEnvironmentVariables(): EnvironmentVariables {
 
   return {
     AWS_ACCOUNT_ID: process.env.AWS_ACCOUNT_ID!,
-    LAMBDA_ENDPOINT: process.env.LAMBDA_ENDPOINT!,
     AWS_REGION: process.env.AWS_REGION!,
+    CAPACITY_PROVIDER_ARN: process.env.CAPACITY_PROVIDER_ARN!,
+    LAMBDA_ENDPOINT: process.env.LAMBDA_ENDPOINT,
     GITHUB_ACTIONS: process.env.GITHUB_ACTIONS,
     GITHUB_ENV: process.env.GITHUB_ENV,
   };
@@ -188,6 +196,29 @@ async function retryOnConflict<T>(
   throw new Error("Max retries exceeded");
 }
 
+async function runWithRetry<T, P>(
+  operation: () => Promise<T>,
+  checkOperationResult: (result: T) => {
+    shouldRetry?: boolean;
+    reason: string;
+  },
+  maxRetries: number,
+) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const result = await operation();
+    const operationResult = checkOperationResult(result);
+    if (!operationResult.shouldRetry) {
+      console.log(`Stopped retrying. Reason: ${operationResult.reason}`);
+      return result;
+    }
+    console.log(
+      `Retrying: ${operationResult.reason}. ${attempt + 1}/${maxRetries} attempts`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error("Max retries exceeded");
+}
+
 async function getCurrentConfiguration(
   lambdaClient: LambdaClient,
   functionName: string,
@@ -204,6 +235,7 @@ async function createFunction(
   exampleConfig: ExamplesWithConfig,
   zipFile: string,
   env: EnvironmentVariables,
+  useCapacityProvider: boolean,
   runtime?: Runtime,
 ): Promise<void> {
   console.log(
@@ -213,7 +245,7 @@ async function createFunction(
   const zipBuffer = readFileSync(zipFile);
   const roleArn = `arn:aws:iam::${env.AWS_ACCOUNT_ID}:role/DurableFunctionsIntegrationTestRole`;
 
-  const createParams = {
+  const createParams: CreateFunctionRequest = {
     FunctionName: functionName,
     Runtime: runtime,
     Role: roleArn,
@@ -228,13 +260,25 @@ async function createFunction(
         }
       : undefined,
     Timeout: 60,
-    MemorySize: 128,
+    MemorySize: useCapacityProvider ? 2048 : 128,
     Environment: {
-      Variables: {
-        AWS_ENDPOINT_URL_LAMBDA: env.LAMBDA_ENDPOINT,
-      },
+      Variables: env.LAMBDA_ENDPOINT
+        ? {
+            AWS_ENDPOINT_URL_LAMBDA: env.LAMBDA_ENDPOINT,
+          }
+        : undefined,
     },
-  } as const;
+    Architectures: useCapacityProvider ? [Architecture.arm64] : undefined,
+    CapacityProviderConfig:
+      useCapacityProvider && exampleConfig.capacityProviderConfig
+        ? {
+            LambdaManagedInstancesCapacityProviderConfig: {
+              CapacityProviderArn: env.CAPACITY_PROVIDER_ARN,
+              ...exampleConfig.capacityProviderConfig,
+            },
+          }
+        : undefined,
+  };
 
   const command = new CreateFunctionCommand(createParams);
   await lambdaClient.send(command);
@@ -248,6 +292,7 @@ async function updateFunction(
   zipFile: string,
   env: EnvironmentVariables,
   currentConfig: GetFunctionConfigurationCommandOutput,
+  useCapacityProvider: boolean,
   runtime?: Runtime,
 ): Promise<void> {
   console.log(`Deploying function: ${functionName} (updating existing)`);
@@ -278,10 +323,21 @@ async function updateFunction(
     FunctionName: functionName,
     Runtime: runtime,
     Environment: {
-      Variables: {
-        AWS_ENDPOINT_URL_LAMBDA: env.LAMBDA_ENDPOINT,
-      },
+      Variables: env.LAMBDA_ENDPOINT
+        ? {
+            AWS_ENDPOINT_URL_LAMBDA: env.LAMBDA_ENDPOINT,
+          }
+        : undefined,
     },
+    CapacityProviderConfig:
+      useCapacityProvider && exampleConfig.capacityProviderConfig
+        ? {
+            LambdaManagedInstancesCapacityProviderConfig: {
+              CapacityProviderArn: env.CAPACITY_PROVIDER_ARN,
+              ...exampleConfig.capacityProviderConfig,
+            },
+          }
+        : undefined,
   };
 
   // Check if DurableConfig needs updating
@@ -320,9 +376,17 @@ async function showFinalConfiguration(
 async function main(): Promise<void> {
   try {
     // Parse arguments and load configuration
-    const { example, functionName, runtime } = parseArgs();
+    const { example, functionName, runtime, useCapacityProvider } = parseArgs();
     const env = loadEnvironmentVariables();
     const exampleConfig = loadExampleConfiguration(example);
+
+    // Validate capacity provider flag against example configuration
+    if (useCapacityProvider && !exampleConfig.capacityProviderConfig) {
+      console.error(
+        `Error: --use-capacity-provider flag specified but example '${example}' has no capacityProviderConfig defined`,
+      );
+      process.exit(1);
+    }
 
     console.log("Found example configuration:");
     console.log(`  Name: ${exampleConfig.name}`);
@@ -338,6 +402,10 @@ async function main(): Promise<void> {
     console.log(
       `  Timeout: ${exampleConfig.durableConfig?.ExecutionTimeout} seconds`,
     );
+    console.log(
+      `  Capacity Provider Enabled: ${!!exampleConfig.capacityProviderConfig}`,
+    );
+    console.log(`  Durability Enabled: ${!!exampleConfig.durableConfig}`);
 
     // Validate zip file exists
     validateZipFile(example);
@@ -348,62 +416,217 @@ async function main(): Promise<void> {
       endpoint: env.LAMBDA_ENDPOINT,
     });
 
-    await retryOnConflict(async () => {
-      console.log("Checking if function exists...");
-      let functionExists = await checkFunctionExists(
-        lambdaClient,
-        functionName,
-      );
-      let currentConfig: GetFunctionConfigurationCommandOutput;
-
-      const zipFile = `${example}.zip`;
-
-      const selectedRuntime = mapRuntimeToEnum(runtime);
-
-      if (functionExists) {
-        currentConfig = await getCurrentConfiguration(
+    await retryOnConflict(
+      async () => {
+        console.log("Checking if function exists...");
+        let functionExists = await checkFunctionExists(
           lambdaClient,
           functionName,
         );
-        if (!!currentConfig.DurableConfig !== !!exampleConfig.durableConfig) {
-          console.log("Deleting function since durable changed");
-          await lambdaClient.send(
-            new DeleteFunctionCommand({
-              FunctionName: functionName,
-            }),
+        let currentConfig: GetFunctionConfigurationCommandOutput;
+
+        const zipFile = `${example}.zip`;
+
+        const selectedRuntime = mapRuntimeToEnum(runtime);
+
+        if (functionExists) {
+          currentConfig = await getCurrentConfiguration(
+            lambdaClient,
+            functionName,
           );
-          functionExists = false;
+          if (!!currentConfig.DurableConfig !== !!exampleConfig.durableConfig) {
+            console.log("Deleting function since durability changed");
+            functionExists = false;
+          }
+          if (!!currentConfig.CapacityProviderConfig !== useCapacityProvider) {
+            console.log("Deleting function since capacity provider changed");
+            functionExists = false;
+          }
+
+          if (!functionExists) {
+            await lambdaClient.send(
+              new DeleteFunctionCommand({
+                FunctionName: functionName,
+              }),
+            );
+          }
         }
-      }
 
-      if (functionExists) {
-        await updateFunction(
-          lambdaClient,
-          functionName,
-          exampleConfig,
-          zipFile,
-          env,
-          currentConfig!,
-          selectedRuntime,
-        );
-      } else {
-        console.log("Function does not exist");
-        await createFunction(
-          lambdaClient,
-          functionName,
-          exampleConfig,
-          zipFile,
-          env,
-          selectedRuntime,
-        );
-      }
-    });
+        if (functionExists) {
+          await updateFunction(
+            lambdaClient,
+            functionName,
+            exampleConfig,
+            zipFile,
+            env,
+            currentConfig!,
+            useCapacityProvider,
+            selectedRuntime,
+          );
+        } else {
+          console.log("Function does not exist");
+          await createFunction(
+            lambdaClient,
+            functionName,
+            exampleConfig,
+            zipFile,
+            env,
+            useCapacityProvider,
+            selectedRuntime,
+          );
+        }
 
-    // Set GITHUB_ENV if running in GitHub Actions
-    if (env.GITHUB_ENV) {
-      const fs = await import("fs");
-      fs.appendFileSync(env.GITHUB_ENV, `FUNCTION_NAME=${functionName}\n`);
-    }
+        if (useCapacityProvider) {
+          for (let attempts = 1; attempts <= 2; attempts++) {
+            console.log(
+              "Publishing LATEST_PUBLISHED for function with capacity provider",
+            );
+            try {
+              await retryOnConflict(
+                () =>
+                  lambdaClient.send(
+                    new PublishVersionCommand({
+                      FunctionName: functionName,
+                      PublishTo:
+                        FunctionVersionLatestPublished.LATEST_PUBLISHED,
+                    }),
+                  ),
+                180,
+              );
+            } catch (err) {
+              throw new Error("Timed out publishing LATEST_PUBLISHED version", {
+                cause: err,
+              });
+            }
+
+            try {
+              console.log("Waiting for function to enter active state");
+              const qualifier = "$LATEST.PUBLISHED";
+              const functionWithQualifier = `${functionName}:${qualifier}`;
+
+              const result = await runWithRetry(
+                async () => {
+                  return getCurrentConfiguration(
+                    lambdaClient,
+                    functionWithQualifier,
+                  );
+                },
+                (currentConfiguration) => {
+                  if (
+                    currentConfiguration.LastUpdateStatus ===
+                      LastUpdateStatus.Failed ||
+                    currentConfiguration.State === State.Failed
+                  ) {
+                    if (
+                      currentConfiguration.LastUpdateStatusReasonCode ===
+                      LastUpdateStatusReasonCode.CapacityProviderScalingLimitExceeded
+                    ) {
+                      return {
+                        shouldRetry: false,
+                        reason: `Capacity provider limit exceeded.`,
+                      };
+                    }
+
+                    throw new Error(
+                      `Function ${functionWithQualifier} failed to enter successful state. ${currentConfiguration.LastUpdateStatusReason ?? currentConfiguration.StateReason}`,
+                    );
+                  }
+
+                  if (
+                    currentConfiguration.State !== State.Active ||
+                    currentConfiguration.LastUpdateStatus ===
+                      LastUpdateStatus.InProgress
+                  ) {
+                    return {
+                      shouldRetry: true,
+                      reason: `Function update status is currently ${currentConfiguration.LastUpdateStatus ?? currentConfiguration.State}`,
+                    };
+                  }
+
+                  return {
+                    shouldRetry: false,
+                    reason: "Function is now active",
+                  };
+                },
+                900,
+              );
+
+              if (
+                result.LastUpdateStatusReasonCode !==
+                LastUpdateStatusReasonCode.CapacityProviderScalingLimitExceeded
+              ) {
+                console.log("Setting function scaling config");
+                await lambdaClient.send(
+                  new PutFunctionScalingConfigCommand({
+                    FunctionName: functionName,
+                    Qualifier: qualifier,
+                    FunctionScalingConfig: {
+                      MinExecutionEnvironments: 1,
+                      MaxExecutionEnvironments: 1,
+                    },
+                  }),
+                );
+                break;
+              }
+
+              console.log(
+                "Deleting function version and retrying since capacity limit exceeded",
+              );
+              // If the capacity provider limit exceeded, we should delete the version and retry once.
+              // It's possible for a failed version to take up capacity.
+              await lambdaClient.send(
+                new DeleteFunctionCommand({
+                  FunctionName: functionWithQualifier,
+                }),
+              );
+
+              console.log("Waiting for function to be deleted");
+              await runWithRetry(
+                async () => {
+                  try {
+                    await getCurrentConfiguration(
+                      lambdaClient,
+                      functionWithQualifier,
+                    );
+                    return true;
+                  } catch (err) {
+                    if (err instanceof ResourceNotFoundException) {
+                      return false;
+                    }
+                    throw err;
+                  }
+                },
+                (exists) => {
+                  if (exists) {
+                    return {
+                      shouldRetry: true,
+                      reason: "Function still exists",
+                    };
+                  }
+
+                  return {
+                    shouldRetry: false,
+                    reason: "Function deleted successfully",
+                  };
+                },
+                120,
+              );
+            } catch (err) {
+              if (err instanceof ResourceConflictException) {
+                throw new Error(
+                  "Timed out waiting for function to enter active state",
+                  {
+                    cause: err,
+                  },
+                );
+              }
+              throw err;
+            }
+          }
+        }
+      },
+      useCapacityProvider ? 120 : undefined,
+    );
 
     console.log(`Successfully deployed function: ${functionName}`);
 

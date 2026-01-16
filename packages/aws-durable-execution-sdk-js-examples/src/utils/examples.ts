@@ -33,18 +33,20 @@ export class Examples {
       throw new Error(`Missing required "config" export in ${fileName}`);
     }
 
-    if (
-      typeof config !== "object" ||
-      !("name" in config) ||
-      typeof config.name !== "string"
-    ) {
+    if (typeof config !== "object" || !config) {
       throw new Error(`Invalid config object for ${fileName}`);
     }
 
-    const description =
-      "description" in config && typeof config.description === "string"
-        ? config.description
-        : undefined;
+    const name =
+      !("name" in config) || typeof config.name !== "string"
+        ? undefined
+        : config.name;
+
+    if (!name) {
+      throw new Error(
+        `Missing required "name" property in config for ${fileName}`,
+      );
+    }
 
     const durableConfig =
       "durableConfig" in config && typeof config.durableConfig === "object"
@@ -52,8 +54,8 @@ export class Examples {
         : undefined;
 
     return {
-      name: config.name,
-      description,
+      ...config,
+      name,
       path: examplePath,
       handler: handlerName,
       durableConfig:
