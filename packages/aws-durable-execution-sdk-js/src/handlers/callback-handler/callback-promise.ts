@@ -5,7 +5,10 @@ import {
 } from "../../types";
 import { OperationStatus } from "@aws-sdk/client-lambda";
 import { safeDeserialize } from "../../errors/serdes-errors/serdes-errors";
-import { CallbackError } from "../../errors/durable-error/durable-error";
+import {
+  CallbackError,
+  CallbackTimeoutError,
+} from "../../errors/durable-error/durable-error";
 import { Serdes } from "../../utils/serdes/serdes";
 import { log } from "../../utils/logger/logger";
 import { Checkpoint } from "../../utils/checkpoint/checkpoint-helper";
@@ -59,16 +62,30 @@ export const createCallbackPromise = <T>(
 
     const callbackData = stepData?.CallbackDetails;
     const error = callbackData?.Error;
+    const isTimedOut = stepData?.Status === OperationStatus.TIMED_OUT;
 
     if (error) {
       const cause = new Error(error.ErrorMessage);
       cause.name = error.ErrorType || "Error";
       cause.stack = error.StackTrace?.join("\n");
+
+      if (isTimedOut) {
+        throw new CallbackTimeoutError(
+          error.ErrorMessage || "Callback timed out",
+          cause,
+          error.ErrorData,
+        );
+      }
+
       throw new CallbackError(
         error.ErrorMessage || "Callback failed",
         cause,
         error.ErrorData,
       );
+    }
+
+    if (isTimedOut) {
+      throw new CallbackTimeoutError("Callback timed out");
     }
 
     throw new CallbackError("Callback failed");

@@ -1,7 +1,10 @@
 import { createCallbackPromise } from "./callback-promise";
 import { ExecutionContext, OperationLifecycleState } from "../../types";
 import { OperationStatus } from "@aws-sdk/client-lambda";
-import { CallbackError } from "../../errors/durable-error/durable-error";
+import {
+  CallbackError,
+  CallbackTimeoutError,
+} from "../../errors/durable-error/durable-error";
 import { Checkpoint } from "../../utils/checkpoint/checkpoint-helper";
 import { safeDeserialize } from "../../errors/serdes-errors/serdes-errors";
 
@@ -182,7 +185,7 @@ describe("createCallbackPromise", () => {
       mockCheckAndUpdateReplayMode,
     );
 
-    await expect(promise).rejects.toThrow(CallbackError);
-    await expect(promise).rejects.toThrow("Callback failed");
+    await expect(promise).rejects.toThrow(CallbackTimeoutError);
+    await expect(promise).rejects.toThrow("Callback timed out");
   });
 });

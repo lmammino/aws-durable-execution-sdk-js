@@ -45,6 +45,12 @@ export abstract class DurableOperationError extends Error {
           cause,
           errorObject.ErrorData,
         );
+      case "CallbackTimeoutError":
+        return new CallbackTimeoutError(
+          errorObject.ErrorMessage || "Callback timed out",
+          cause,
+          errorObject.ErrorData,
+        );
       case "InvokeError":
         return new InvokeError(
           errorObject.ErrorMessage || "Invoke failed",
@@ -108,6 +114,21 @@ export class CallbackError extends DurableOperationError {
 
   constructor(message?: string, cause?: Error, errorData?: string) {
     super(message || "Callback failed", cause, errorData);
+  }
+}
+
+/**
+ * Error thrown when a callback operation times out.
+ * Users can check for timeouts using `instanceof CallbackTimeoutError`.
+ * For backward compatibility, also check `instanceof CallbackError` after
+ * checking for `CallbackTimeoutError` to catch both timeout and regular failures.
+ * @public
+ */
+export class CallbackTimeoutError extends DurableOperationError {
+  readonly errorType = "CallbackTimeoutError";
+
+  constructor(message?: string, cause?: Error, errorData?: string) {
+    super(message || "Callback timed out", cause, errorData);
   }
 }
 

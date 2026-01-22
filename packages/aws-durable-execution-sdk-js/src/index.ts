@@ -41,6 +41,7 @@ export {
   DurableOperationError,
   StepError,
   CallbackError,
+  CallbackTimeoutError,
   InvokeError,
   ChildContextError,
   WaitForConditionError,
