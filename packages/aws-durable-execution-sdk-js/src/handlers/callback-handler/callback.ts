@@ -11,7 +11,11 @@ import { log } from "../../utils/logger/logger";
 import { Checkpoint } from "../../utils/checkpoint/checkpoint-helper";
 import { Serdes } from "../../utils/serdes/serdes";
 import { safeDeserialize } from "../../errors/serdes-errors/serdes-errors";
-import { CallbackError } from "../../errors/durable-error/durable-error";
+import {
+  CallbackError,
+  CallbackTimeoutError,
+  DurableOperationError,
+} from "../../errors/durable-error/durable-error";
 import { validateReplayConsistency } from "../../utils/replay-validation/replay-validation";
 import { durationToSeconds } from "../../utils/duration/duration";
 import { createCallbackPromise } from "./callback-promise";
@@ -189,18 +193,28 @@ export const createCallback = (
 
         // Handle failure
         const error = stepData?.CallbackDetails?.Error;
+        const isTimedOut = stepData?.Status === OperationStatus.TIMED_OUT;
         const callbackError = error
-          ? ((): CallbackError => {
+          ? ((): DurableOperationError => {
               const cause = new Error(error.ErrorMessage);
               cause.name = error.ErrorType || "Error";
               cause.stack = error.StackTrace?.join("\n");
+              if (isTimedOut) {
+                return new CallbackTimeoutError(
+                  error.ErrorMessage || "Callback timed out",
+                  cause,
+                  error.ErrorData,
+                );
+              }
               return new CallbackError(
                 error.ErrorMessage || "Callback failed",
                 cause,
                 error.ErrorData,
               );
             })()
-          : new CallbackError("Callback failed");
+          : isTimedOut
+            ? new CallbackTimeoutError("Callback timed out")
+            : new CallbackError("Callback failed");
 
         const rejectedPromise = new DurablePromise(async (): Promise<T> => {
           throw callbackError;
